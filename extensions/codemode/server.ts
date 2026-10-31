@@ -521,10 +521,17 @@ export default function codemode(host: ExtensionHost) {
       const sandboxContext = withAbortSignal(controller.signal, context)
       let yielded = false
       const agent = await api.agent(context)
-      const tools = declarations(agent.tools).map((declaration): CodemodeTool => ({
+      // Tools only other tools may call (MCP's bridged tools) are scripts' alone: never offered to the model.
+      const scriptTools = [
+        ...agent.tools,
+        ...agent.callable.filter(
+          (tool) => tool.callers?.includes('model') === false && !tool.name.startsWith('pi.'),
+        ),
+      ]
+      const tools = declarations(scriptTools).map((declaration): CodemodeTool => ({
         ...declaration,
         execute: async (args, { signal }) => {
-          const resolved = agent.tools.find(
+          const resolved = scriptTools.find(
             (tool) => tool.name === declaration.name,
           )! as StructuredTool
           const started = performance.now()
