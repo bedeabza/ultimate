@@ -21,6 +21,7 @@ A `url` speaks streamable HTTP; a `command` (with optional `args`, `env` and `cw
 - `mcp` (offered to the model): `servers` lists each server with its state and tools, `tools {server}` gives one server's tool schemas (connecting first), `call {server, tool, arguments}` runs one.
 - `mcp_search` (deferred, loaded through `tool_search`): searches the cached tools by name and description.
 - Every cached MCP tool is registered as `<server>__<tool>` with `callers: ['tools']`: the model is never offered it, so the prompt stays one tool however many servers there are, and codemode scripts call it directly as `tools.<server>__<tool>(args)`.
+- An agent whose definition lists its `tools` gets only what it names: @ultimate lists `mcp` and calls servers through it (also from codemode, as `tools.mcp({action: 'call', …})`).
 
 Tool lists are cached in `~/.ultimate/mcp/tools/<server>.json` and registered from there at install. Connecting (the first `tools` or `call`, or Connect in the panel) fetches the list again; a changed list reinstalls the facet.
 
