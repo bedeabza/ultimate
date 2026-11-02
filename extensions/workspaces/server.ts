@@ -226,7 +226,7 @@ export default function workspaceExtension(host: ExtensionHost) {
       defineTool({
         name: 'workspace',
         description:
-          'Inspect your workspace and source tips, or submit your clean, verified tip to the lander, which merges it into the target branch, runs the configured checks, fast-forwards the target and pushes when configured (submit requires divergence from the original request). A failure comes back to you to fix and submit again; a landing reaches whoever started you, and concludes you when nothing else is under way. With afterLanding, the landing instead wakes you with its card and that text, so you can do a step that must follow it (a deploy, a check on main, a message); you are concluded when that turn stops.',
+          'Inspect your workspace and source tips, or submit your clean, verified tip to the lander (submit requires divergence from the original request; afterLanding makes the landing wake you for a step that must follow it, instead of concluding you).',
         parameters: Type.Object({
           action: Type.Union([Type.Literal('status'), Type.Literal('submit')]),
           divergence: Type.Optional(

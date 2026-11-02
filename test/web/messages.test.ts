@@ -264,6 +264,23 @@ describe("background in @ultimate's compact transcript", () => {
     expect(threadRow(row('prompt.build'), messagesLog)).toBe(false)
   })
 
+  it('folds a final answer routed down to branches, naming them', () => {
+    // @ultimate's weigh-in to #477200's decisions rendered as a message to the user, above the branch's question card.
+    const routed = {
+      messages: [
+        { ...base, id: 1, from: 8, to: 7, reply: false, report: true as const },
+        { ...base, id: 2, from: 7, to: 8, reply: false, routed: 30 },
+        { ...base, id: 3, from: 7, to: 9, reply: false, routed: 30 },
+        { ...base, id: 4, from: 7, to: 6, reply: false, routed: 29 },
+      ],
+      next: 5,
+    }
+    const answer = row('pi.assistant', undefined, said('stop'))
+    expect(backgroundRow(answer, routed)).toBe(true)
+    expect(threadRow(answer, routed)).toBe(false)
+    expect(counterparts(answer, routed)).toEqual([8, 9])
+  })
+
   it('names who each row was with', () => {
     const toAgent = { id: 'tell', name: 'message', arguments: { to: '#5' } }
     expect(counterparts(row('board.reply', { from: 4 }), messagesLog)).toEqual([4])
@@ -403,6 +420,10 @@ describe('conversation state', () => {
     const branch = { id: 5, kind: 'other' as const, runState: 'answered' as const, primary: 3 }
     const report = { from: 5, to: 3, reply: false, report: true as const }
     expect(conversationState(branch, messagesLog(report))).toBe('awaiting')
+    // A branch's reply awaits its answer; a standing agent's reply just answered (life's @google).
+    const reply = { from: 5, to: 3, reply: false, re: 1 }
+    expect(conversationState(branch, messagesLog({ ...reply, awaits: true }))).toBe('awaiting')
+    expect(conversationState(branch, messagesLog(reply))).toBe('idle')
     // A note (no report) waits on nothing.
     expect(conversationState(branch, messagesLog({ from: 5, to: 3, reply: false }))).toBe('idle')
     expect(conversationState(branch, messagesLog(report, { from: 3, to: 5, reply: false }))).toBe(
