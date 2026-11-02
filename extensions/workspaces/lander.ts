@@ -303,8 +303,12 @@ type State =
       conversationId: number
       text: string
       outcome: WorkspaceIndex['results'][string]
+      afterLanding?: string
     }
-  /** The landing's decision, made once: tell `starter` (waking it only when the branch `concluded`), then release it. */
+  /**
+   * The landing's decision, made once: tell `starter` (waking it only when the branch `concluded`), then release it, or
+   * wake the branch for its `afterLanding` step.
+   */
   | {
       phase: 'deliver'
       id: string
@@ -313,6 +317,7 @@ type State =
       outcome: WorkspaceIndex['results'][string]
       concluded: boolean
       starter?: number
+      afterLanding?: string
     }
   /** A landed branch concluded in the report's last commit: free its checkout. */
   | { phase: 'release'; conversationId: number }
@@ -449,6 +454,9 @@ export function createLander(
                 id,
                 conversationId: entry.conversationId,
                 outcome: draft.results[id],
+                ...(entry.afterLanding && outcome.outcome === 'landed'
+                  ? { afterLanding: entry.afterLanding }
+                  : {}),
                 text: `[lander] Submission ${id} (#${entry.conversationId}, ${entry.tip.slice(0, 7)}) ${text}\nLog: lander conversation #${runtime.conversationId}.`,
               },
             }
@@ -776,10 +784,12 @@ export function createLander(
       /**
        * A failure wakes the submitter, which fixes it and submits again. A landing is the end of the branch's work: the
        * submitter gets the card as a note, the branch is concluded unless work is still under way, and whoever started
-       * it wakes with the same card. Each write has its request id, so a resume never sends one twice.
+       * it wakes with the same card. With `afterLanding` the branch is not concluded here: `deliver` wakes it with the
+       * card, and messages concludes it when that turn stops. Each write has its request id, so a resume never sends one
+       * twice.
        */
       report: async (task, runtime, context) => {
-        const { id, conversationId, text, outcome } = task.state.checkpoint
+        const { id, conversationId, text, outcome, afterLanding } = task.state.checkpoint
         const branch = conversationId as ConversationId
         const entry = { kind: LanderReportEntry, data: { id, outcome } }
         const next = { status: 'running', checkpoint: { phase: 'next' } } as const
@@ -799,23 +809,28 @@ export function createLander(
           await runtime.commit(() => next, context)
           return
         }
-        await (
-          await host.harness().conversation(branch, context)
-        )?.submit(
-          {
-            type: 'write',
-            requestId: `lander:${id}`,
-            entry: { ...entry, model: [{ role: 'user', content: text, timestamp: Date.now() }] },
-          },
-          context,
-        )
+        if (!afterLanding)
+          await (
+            await host.harness().conversation(branch, context)
+          )?.submit(
+            {
+              type: 'write',
+              requestId: `lander:${id}`,
+              entry: { ...entry, model: [{ role: 'user', content: text, timestamp: Date.now() }] },
+            },
+            context,
+          )
         const starter = await after.starter(branch, context)
         // Decided once, with the conversation's state, in the commit that leaves this phase: input admitted after it
         // resumes the branch, and a replay delivers what was decided. While this phase lasts, the branch's own report
         // waits as a note (messages counts this phase as under way); once decided, a branch left open reports when it stops.
         await runtime.commit(async (tx) => {
           let concluded = false
-          if (!(await after.working(tx, branch)))
+          const item = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(branch)]
+          // The branch's next stop with nothing under way concludes it (messages' board.route).
+          if (afterLanding) item.afterLanding = id
+          else delete item.afterLanding
+          if (!afterLanding && !(await after.working(tx, branch)))
             try {
               await after.conclude(tx, branch)
               concluded = true
@@ -833,6 +848,7 @@ export function createLander(
               outcome,
               concluded,
               ...(starter !== undefined && starter !== branch ? { starter } : {}),
+              ...(afterLanding ? { afterLanding } : {}),
             },
           }
         }, context)
@@ -840,9 +856,16 @@ export function createLander(
       // The starter wakes once when the branch's work ends: here when the landing concluded it, else with the branch's
       // own report when it stops, so the card goes as a note.
       deliver: async (task, runtime, context) => {
-        const { id, conversationId, text, outcome, concluded, starter } = task.state.checkpoint
+        const { id, conversationId, text, outcome, concluded, starter, afterLanding } =
+          task.state.checkpoint
         const entry = { kind: LanderReportEntry, data: { id, outcome } }
-        const content = `${text}\nDiverged: ${outcome.divergence}\n${concluded ? `#${conversationId} is concluded.` : `#${conversationId} still has work under way; it reports when it stops.`}`
+        const content = `${text}\nDiverged: ${outcome.divergence}\n${
+          concluded
+            ? `#${conversationId} is concluded.`
+            : afterLanding
+              ? `#${conversationId} now does its after-landing step; it reports and concludes when it stops.`
+              : `#${conversationId} still has work under way; it reports when it stops.`
+        }`
         if (starter !== undefined)
           await (
             await host.harness().conversation(starter as ConversationId, context)
@@ -857,6 +880,20 @@ export function createLander(
                     model: [{ role: 'user', content, timestamp: Date.now() }],
                   },
                 },
+            context,
+          )
+        // After the starter's note, so the branch's report of this step reaches the starter after the card.
+        if (afterLanding)
+          await (
+            await runtime.conversation(conversationId as ConversationId, context)
+          )?.submit(
+            {
+              type: 'input',
+              content: `${text}\nAfter landing: ${afterLanding}\nDo this step now; you are concluded when you stop with nothing else under way.`,
+              entry,
+              whenBusy: 'followUp',
+              requestId: `lander:${id}`,
+            },
             context,
           )
         await runtime.commit(

@@ -9,6 +9,8 @@ export type Workspace = {
   state: 'preparing' | 'ready' | 'failed' | 'removed'
   error?: string
   landed?: string
+  /** The submission whose landing woke this branch for its after-landing turn: it concludes when it next stops. */
+  afterLanding?: string
 }
 /** One `workspace submit`, waiting for or being processed by its source's lander. */
 export type QueueEntry = {
@@ -20,6 +22,8 @@ export type QueueEntry = {
   /** Latest submitting conversation entry when submit was called. */
   at: number
   divergence: string
+  /** What the branch does once this lands: the landing wakes it with this instead of concluding it. */
+  afterLanding?: string
   state: 'queued' | 'landing'
   subject?: ConversationSubject
   step?: string

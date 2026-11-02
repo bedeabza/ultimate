@@ -69,6 +69,15 @@ async function underway(host: ExtensionHost, tx: Tx, id: ConversationId): Promis
   }
   return working(tx, id)
 }
+/** Whether the lander is about to wake branch `id` with its landing card. */
+async function delivering(tx: Tx, id: ConversationId) {
+  for (const task of await live(tx, 'workspaces.lander')) {
+    const checkpoint = (task.state as { checkpoint?: { phase?: string; conversationId?: number } })
+      .checkpoint
+    if (checkpoint?.phase === 'deliver' && checkpoint.conversationId === id) return true
+  }
+  return false
+}
 /**
  * Whether `id` has work of its own that will wake it: a run or queued input, a waking task, a busy subagent at any
  * depth, or a reply-enabled message it sent still waiting on its answer. The lander asks it before concluding.
@@ -167,6 +176,7 @@ export function route(host: ExtensionHost) {
         )
         const { by } = task.input
         const id = runtime.conversationId
+        let concluded = false
         const routed = await host.harness().commit(async (tx): Promise<Route[]> => {
           // A continued generation's answer is no run's final answer: only inputs it settled make one.
           const answered = inputs.flatMap((input) =>
@@ -213,7 +223,21 @@ export function route(host: ExtensionHost) {
             if (!asked) elsewhere = false
             if (data?.routed !== true) echo = false
           }
-          const report = !(await underway(host, tx, id))
+          // A landing with an after-landing step wakes the branch for it: until that turn ran, its work goes on, and
+          // stopping after it with nothing under way concludes it.
+          const item = (await tx.doc(host.need(WorkspacesApi).doc, ROOT_CONVERSATION_ID)).items[
+            String(id)
+          ]
+          let woken = false
+          for (const entryId of answered)
+            if ((await tx.entry(entryId))?.kind === 'workspaces.lander-report') woken = true
+          const waking = Boolean(item?.afterLanding) && !woken && (await delivering(tx, id))
+          const report = !waking && !(await underway(host, tx, id))
+          if (report && item?.afterLanding) {
+            delete item.afterLanding
+            await host.need(ConversationsApi).concludeIn(tx, [id])
+            concluded = true
+          }
           const up = (body: string, options: Route['options']) => [
             {
               to: by,
@@ -239,6 +263,14 @@ export function route(host: ExtensionHost) {
             await send(host, id, { to: `#${to}`, text, reply: false }, ctx, {
               requestId,
               ...options,
+            })
+        if (concluded)
+          await host
+            .need(WorkspacesApi)
+            .release([id], ctx)
+            .catch((error: unknown) => {
+              // The branch stays concluded; the next open's reconciliation frees its checkout instead.
+              host.notice(`Releasing #${id} after its after-landing step failed: ${String(error)}`)
             })
         await runtime.commit(() => terminal, ctx)
       },

@@ -184,10 +184,16 @@ lander's sidebar row shows the feature it lands or landed last.
      still has work under way (which then reports when it stops, as any branch does). Last, a concluded branch's
      checkout is released. A root or standing agent refuses concluding and stays open. Any later input resumes a
      concluded branch.
+   - A landing with an after-landing step (`workspace submit` with `afterLanding`, for a step that must follow it: a
+     deploy, a check on main, a message) does not conclude the branch. The starter gets the card as a note saying the
+     branch now does that step; then the card, with the `afterLanding` text, is a waking input to the branch, and its
+     record keeps the submission as `afterLanding`. When that turn stops with nothing under way, messages' route
+     concludes the branch in the commit that sends its final answer to the starter as its report, then releases its
+     checkout; while work is still under way it stays open, and the next such stop concludes it.
 
 Settings (`.ultimate/settings.json`): `"lander": { "checks": ["pnpm check", [{ "command": "pnpm test", "timeout": 180 }, "pnpm test:e2e"]], "push": "origin" }`;
 both are optional. Anything that must follow every landing (a deploy, a notification) is an automation on the
-`workspaces.landed` event.
+`workspaces.landed` event; a step only one submission needs is its `afterLanding`.
 
 Each attempt starts from a reset checkout, and the integrated commit is memoized after the checks, so a crash resumes
 safely. Failed submissions are dropped from the queue after their report.

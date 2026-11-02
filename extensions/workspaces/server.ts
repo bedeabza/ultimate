@@ -226,7 +226,7 @@ export default function workspaceExtension(host: ExtensionHost) {
       defineTool({
         name: 'workspace',
         description:
-          'Inspect your workspace and source tips, or submit your clean, verified tip to the lander, which merges it into the target branch, runs the configured checks, fast-forwards the target and pushes when configured (submit requires divergence from the original request). A failure comes back to you to fix and submit again; a landing reaches whoever started you, and concludes you when nothing else is under way.',
+          'Inspect your workspace and source tips, or submit your clean, verified tip to the lander, which merges it into the target branch, runs the configured checks, fast-forwards the target and pushes when configured (submit requires divergence from the original request). A failure comes back to you to fix and submit again; a landing reaches whoever started you, and concludes you when nothing else is under way. With afterLanding, the landing instead wakes you with its card and that text, so you can do a step that must follow it (a deploy, a check on main, a message); you are concluded when that turn stops.',
         parameters: Type.Object({
           action: Type.Union([Type.Literal('status'), Type.Literal('submit')]),
           divergence: Type.Optional(
@@ -235,8 +235,14 @@ export default function workspaceExtension(host: ExtensionHost) {
                 "Required for submit. How the delivered result differs from what was originally asked: new agreements, a different approach or library, changed scope. Say 'None' when it matches.",
             }),
           ),
+          afterLanding: Type.Optional(
+            Type.String({
+              description:
+                'Optional, for submit: what you do once it has landed. The landing wakes you with its card and this text instead of concluding you; you are concluded when that turn stops.',
+            }),
+          ),
         }),
-        async execute({ action, divergence }, api, caller) {
+        async execute({ action, divergence, afterLanding }, api, caller) {
           if (action === 'status')
             return finish({
               conversationId: api.conversationId,
@@ -253,7 +259,9 @@ export default function workspaceExtension(host: ExtensionHost) {
             )
               throw new Error(`Only a top-level main conversation can ${action} its own workspace`)
           }, caller)
-          return finish(await service.submit(api.conversationId, divergence ?? '', caller))
+          return finish(
+            await service.submit(api.conversationId, divergence ?? '', caller, afterLanding),
+          )
         },
       }),
     ],
@@ -269,7 +277,7 @@ export default function workspaceExtension(host: ExtensionHost) {
           .commit((tx) => tx.conversation(input.conversationId), caller)
         if (row?.owner)
           return `${head} You are a subagent: commit your verified work in this worktree and report the commit to your owner, who lands it. Only a top-level conversation can \`workspace submit\`.`
-        return `${head} Finish with \`workspace submit\` once your tip is committed and verified: the lander merges it into ${own.target} with whatever landed meanwhile, runs the project's checks, fast-forwards ${own.target} and pushes when configured; keep working meanwhile and do not merge ${own.target} yourself first. A failure comes back to you as a message: fix it and submit again. A landing reaches whoever started you as its card, and concludes you unless other work is still under way.`
+        return `${head} Finish with \`workspace submit\` once your tip is committed and verified: the lander merges it into ${own.target} with whatever landed meanwhile, runs the project's checks, fast-forwards ${own.target} and pushes when configured; keep working meanwhile and do not merge ${own.target} yourself first. A failure comes back to you as a message: fix it and submit again. A landing reaches whoever started you as its card, and concludes you unless other work is still under way; when something must follow the landing (a deploy, a check on main), submit with \`afterLanding\` describing it, and the landing wakes you to do it.`
       }),
     ],
   })

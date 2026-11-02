@@ -34,6 +34,7 @@ import { LineageApi, Roots } from '../../extensions/lineage/api.ts'
 import {
   actions as conversationActions,
   concludeIn,
+  concludedIn,
   subject,
 } from '../../extensions/conversations/server.ts'
 import { ConversationsApi } from '../../extensions/conversations/api.ts'
@@ -1059,6 +1060,7 @@ async function concluding() {
       concluded: async () => new Set<ConversationId>(),
       subject: async () => ({}),
       concludeIn: (tx, ids) => concludeIn(f.host, tx, ids),
+      concludedIn,
     }),
   )
   f.prepared.registry.install(lineage(f.host))
@@ -1196,6 +1198,42 @@ it.concurrent('wakes only the submitter on a failed landing and leaves it open',
       (entry) => entry.kind === 'workspaces.lander-report',
     ),
   ).toHaveLength(0)
+})
+it.concurrent('wakes a branch with an after-landing step instead of concluding it, and concludes it when that turn stops', async () => {
+  const { f, id } = await concluding()
+  const steps: string[] = []
+  f.prepared.faux!.setResponses([
+    (transcript) => {
+      const last = transcript.messages.at(-1)!
+      steps.push(JSON.stringify(last.content))
+      return fauxAssistantMessage('Deployed.')
+    },
+  ])
+  const { id: submission } = await f.service.submit(id, 'None', context, 'Deploy to staging.')
+  await until(async () => (await concludedIds(f)).includes(id))
+  // One run of the branch, woken by the landing card with its step.
+  expect(steps).toHaveLength(1)
+  expect(steps[0]).toContain('After landing: Deploy to staging.')
+  const branch = (await f.opened.harness.conversation(id, context))!
+  const reports = (await branch.context(context)).entries.filter(
+    (entry) => entry.kind === 'workspaces.lander-report',
+  )
+  expect(reports).toHaveLength(1)
+  expect(
+    await f.opened.harness.commit(
+      (tx) => tx.submissionByRequest(id, `lander:${submission}`),
+      context,
+    ),
+  ).toMatchObject({ type: 'input', status: 'done' })
+  // The starter heard of the landing as a note, then the branch's answer as its report.
+  const sent = (await f.opened.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!.messages
+  expect(sent.filter((m) => m.from === id)).toMatchObject([{ text: 'Deployed.', report: true }])
+  const starter = (await f.opened.root.context(context)).entries.filter(
+    (entry) => entry.kind === 'workspaces.lander-report',
+  )
+  expect(JSON.stringify(starter[0].model)).toContain(`#${id} now does its after-landing step`)
+  await until(async () => (await f.service.get(id, context))?.state === 'removed')
+  expect((await f.service.get(id, context))!.afterLanding).toBeUndefined()
 })
 it.concurrent('delivers a message to a resumed branch whose checkout conclude released', async () => {
   const { f, id } = await concluding()

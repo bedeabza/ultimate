@@ -791,12 +791,15 @@ export function workspaces(host: Host) {
     id: ConversationId,
     divergence: string,
     context: Context,
+    /** What the branch does once this lands: the landing wakes it with this instead of concluding it. */
+    afterLanding?: string,
   ): Promise<SubmitResult> {
     if (!divergence?.trim())
       throw new Error(
         "Submitting requires divergence: describe changes from the original request, or say 'None'.",
       )
     divergence = divergence.trim()
+    afterLanding = afterLanding?.trim()
     const workspace = await get(id, context)
     if (!workspace) throw new Error('Conversation has no workspace')
     if (workspace.state !== 'ready') throw new Error(`Workspace is ${workspace.state}`)
@@ -830,6 +833,7 @@ export function workspaces(host: Host) {
         tip,
         at,
         divergence,
+        ...(afterLanding ? { afterLanding } : {}),
         state: 'queued' as const,
         ...(subject ? { subject } : {}),
         steps: [],
@@ -846,7 +850,7 @@ export function workspaces(host: Host) {
         id: entry.id,
         position: position + 1,
         lander,
-        text: `Submitted ${tip.slice(0, 7)} as ${entry.id}, position ${position + 1} in the ${target} queue. A failure comes back here; a landing reaches whoever started you and concludes you unless work is still under way. Log: lander conversation #${lander}.`,
+        text: `Submitted ${tip.slice(0, 7)} as ${entry.id}, position ${position + 1} in the ${target} queue. A failure comes back here; ${entry.afterLanding ? 'a landing reaches whoever started you and wakes you with its card for your after-landing step, and you are concluded when that turn stops' : 'a landing reaches whoever started you and concludes you unless work is still under way'}. Log: lander conversation #${lander}.`,
       }
     }, context)
     host.harness().resume()
