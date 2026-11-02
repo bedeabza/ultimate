@@ -40,8 +40,8 @@ import type { ActionContext } from '../../server/actions.ts'
 import { READS, readProject } from './projects.ts'
 import { REMOTE_BYTES } from '../../lib/remote.ts'
 import type { Read } from './projects.ts'
-import { closedChapter, id, limit, readChapter } from './chapters.ts'
-import type { HistoryRead } from './chapters.ts'
+import { closedChapter, hit, id, limit, readChapter } from './chapters.ts'
+import type { HistoryRead, SearchHit } from './chapters.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { MessagesApi } from '../messages/api.ts'
 import type { ResponseReceipt } from '../conversations/summary.ts'
@@ -135,7 +135,7 @@ function localReads(host: ExtensionHost, context: Context) {
       options.conversationId === undefined
         ? await conversations()
         : [{ id: id(options.conversationId) }]
-    const matches: EntryRecord[] = []
+    const matches: SearchHit[] = []
     for (const conversation of records) {
       let cursor: Cursor | undefined
       do {
@@ -143,7 +143,8 @@ function localReads(host: ExtensionHost, context: Context) {
         if (!found) throw new Error('Unknown conversation')
         const page = await found.entries({}, 100, cursor, context)
         for (const entry of page.items) {
-          if (JSON.stringify(entry).includes(text)) matches.push(entry)
+          const match = hit(entry, text)
+          if (match) matches.push(match)
           if (matches.length === count) return matches
         }
         cursor = page.next
@@ -385,9 +386,9 @@ function globals(
     {
       name: 'search',
       description:
-        'Case-sensitive substring search over all stored entry JSON, including history before resets and compactions.',
+        'Case-sensitive substring search over stored entry JSON, including history before resets and compactions; skips pi.system and prompt.build. Each hit has the JSON around its first match; read the whole entry with entries(conversationId, { before: id + 1, limit: 1 }).',
       signature:
-        '(text: string, options?: { conversationId?: number; limit?: number; project?: string; machine?: string; chapter?: string }): Promise<unknown[]>',
+        '(text: string, options?: { conversationId?: number; limit?: number; project?: string; machine?: string; chapter?: string }): Promise<{ id: number; conversationId: number; kind: string; snippet: string }[]>',
       execute: read('search', 1),
     },
     {

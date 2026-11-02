@@ -31,7 +31,7 @@ Only inside codemode (not standalone model tools):
 - `ultimate.conversations()` — all stored conversations with their owner, and for listed ones title, label, cwd,
   busy, inputAt and concluded.
 - `ultimate.entries(conversationId, { kinds?, limit?, before? })` — newest-first fork-aware history, including entries before resets/compactions; `before` is an exclusive entry ID.
-- `ultimate.search(text, { conversationId?, limit? })` — case-sensitive substring over stored entry JSON, including pre-reset/pre-compaction history.
+- `ultimate.search(text, { conversationId?, limit? })` — case-sensitive substring over stored entry JSON, including pre-reset/pre-compaction history. Returns `{ id, conversationId, kind, snippet }` per hit, the snippet being up to 200 characters of JSON either side of the first match, and skips `pi.system` and `prompt.build` entries: whole entries ran scripts out of memory. Read a full hit with `ultimate.entries(conversationId, { before: id + 1, limit: 1 })`.
 - `ultimate.taskGraph()` — live tasks and ownership graph.
 
 ### Other chapters
