@@ -26,7 +26,7 @@ import { parentOf, Started, starterOf } from './addresses.ts'
 import { delivery } from './delivery.ts'
 import { notice } from './notice.ts'
 import { send } from './send.ts'
-import { route, working } from './route.ts'
+import { reported, route, working } from './route.ts'
 import { remoteAction, remoteReplyAction, tell } from './remote.ts'
 import { branchTool } from './branch.ts'
 export { gist, openQuestionsNote } from './questions.ts'
@@ -243,16 +243,44 @@ export default function messages(host: ExtensionHost) {
           if (input.to !== 'user')
             return { output: [{ type: 'text', text: `Message ${id} sent.` }] }
           // The message is @ultimate's answer: the run ends here instead of restating it, unless a reply it has read
-          // is owed. One still queued gets its own turn.
-          const owed = await host
-            .harness()
-            .commit(
-              async (tx) =>
-                (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.some(
-                  (m) => m.to === api.conversationId && m.reply && m.state === 'delivered',
+          // is owed, or a branch's report or reply that woke this run still waits on its final answer (`board.route`
+          // routes it down). One still queued gets its own turn.
+          const primary =
+            (await api.snapshot(Standing, ROOT_CONVERSATION_ID, ctx))?.ultimate ===
+            api.conversationId
+          const inputs = primary
+            ? await Promise.all(
+                ((await api.snapshot(LiveDoc, api.conversationId, ctx))?.run?.inputs ?? []).map(
+                  async (submission) => {
+                    const record = await (
+                      await host.harness().submission(submission, ctx)
+                    )?.status(ctx)
+                    return record?.type === 'input' ? record.entry : undefined
+                  },
                 ),
-              ctx,
-            )
+              )
+            : []
+          const { owed, waiting } = await host.harness().commit(
+            async (tx) => ({
+              owed: (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.some(
+                (m) => m.to === api.conversationId && m.reply && m.state === 'delivered',
+              ),
+              waiting:
+                inputs.length && inputs.every((entry) => entry !== undefined)
+                  ? await reported(host, tx, api.conversationId, inputs)
+                  : [],
+            }),
+            ctx,
+          )
+          if (waiting.length)
+            return {
+              output: [
+                {
+                  type: 'text',
+                  text: `Message ${id} sent. ${waiting.map((b) => `#${b}`).join(' and ')} still waits on your answer: your final answer goes to it, so give it now.`,
+                },
+              ],
+            }
           return {
             output: [{ type: 'text', text: `Message ${id} sent.` }],
             ...(owed ? {} : { control: { terminate: true as const } }),
