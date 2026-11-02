@@ -24,6 +24,30 @@ export const id = (value: unknown): ConversationId => {
 
 export type HistoryRead = 'conversations' | 'entries' | 'search'
 
+/** Prompt bookkeeping repeats in every conversation and matches almost any text; search leaves it out. */
+const UNSEARCHED = new Set(['pi.system', 'prompt.build'])
+const AROUND = 200
+
+/**
+ * A search hit: the entry's ids and kind with the stored JSON around the first match, or undefined when it does not match.
+ * Whole entries (tool results, transcripts) made a few hundred matches exhaust the sandbox's memory.
+ */
+export const hit = (entry: EntryRecord, text: string) => {
+  if (UNSEARCHED.has(entry.kind)) return undefined
+  const json = JSON.stringify(entry)
+  const at = json.indexOf(text)
+  if (at < 0) return undefined
+  const start = Math.max(0, at - AROUND)
+  const end = Math.min(json.length, at + text.length + AROUND)
+  return {
+    id: entry.id,
+    conversationId: entry.conversationId,
+    kind: entry.kind,
+    snippet: `${start > 0 ? '…' : ''}${json.slice(start, end)}${end < json.length ? '…' : ''}`,
+  }
+}
+export type SearchHit = NonNullable<ReturnType<typeof hit>>
+
 /** Undefined means the live chapter; unknown names fail before any database is opened. */
 export async function closedChapter(home: string, active: string, options: unknown) {
   if (
@@ -124,15 +148,17 @@ export function readChapter(database: string, op: HistoryRead, args: unknown[]) 
         }
       })
     }
-    const matches: EntryRecord[] = []
     if (op === 'entries') {
+      const matches: EntryRecord[] = []
       const options = (args[1] ?? {}) as { kinds?: string[]; limit?: number; before?: number }
       const count = limit(options.limit)
       for (const entry of entries(args[0], options.before)) {
         if (!options.kinds || options.kinds.includes(entry.kind)) matches.push(entry)
         if (matches.length === count) break
       }
+      return matches
     } else {
+      const matches: SearchHit[] = []
       const text = args[0]
       if (typeof text !== 'string' || !text) throw new Error('search text must be nonempty')
       const options = (args[1] ?? {}) as { conversationId?: number; limit?: number }
@@ -143,12 +169,13 @@ export function readChapter(database: string, op: HistoryRead, args: unknown[]) 
           : [{ id: id(options.conversationId) }]
       for (const record of records) {
         for (const entry of entries(record.id)) {
-          if (JSON.stringify(entry).includes(text)) matches.push(entry)
+          const found = hit(entry, text)
+          if (found) matches.push(found)
           if (matches.length === count) return matches
         }
       }
+      return matches
     }
-    return matches
   } finally {
     db.close()
   }
