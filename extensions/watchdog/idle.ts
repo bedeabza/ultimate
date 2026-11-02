@@ -16,25 +16,36 @@ const Seen = defineDoc<{ key?: string }>({
   initial: () => ({}),
 })
 
+/**
+ * The `watchdog.idle` note for @ultimate (`conversationId`), or undefined when its set of branches is unchanged. With
+ * `turnEnd`, @ultimate is idle with its answers delivered: a branch still owed one counts at once, and the note comes
+ * only when one does.
+ */
 export async function idleNote(
   tx: Tx,
   host: ExtensionHost,
   conversationId: ConversationId,
   now: number,
+  turnEnd = false,
 ) {
   const concluded = await host.need(ConversationsApi).concludedIn(tx)
   const queue = (await tx.doc(host.need(WorkspacesApi).doc, ROOT_CONVERSATION_ID)).queue
   const excluded = new Set([...concluded, ...queue.map((item) => item.conversationId)])
   const messages = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages
-  // A branch waiting on a reply gets 2 h; one that ended its run with nothing to wait on may have stalled: 30 min.
+  // A branch waiting on another conversation's reply gets 2 h; one that ended its run with nothing to wait on may have
+  // stalled: 30 min. One waiting on @ultimate's answer (an open question, or a report or reply since @ultimate last
+  // messaged it) gets 10 min, and none once @ultimate's turn ended without answering it. An echo is never answered.
   const waiting = new Set<number>()
-  for (const message of messages)
-    if (
-      typeof message.from === 'number' &&
-      message.reply &&
-      (message.state === 'sent' || message.state === 'delivered')
-    )
-      (message.to === 'user' ? excluded : waiting).add(message.from)
+  const owed = new Set<number>()
+  for (const message of messages) {
+    const open = message.reply && (message.state === 'sent' || message.state === 'delivered')
+    if (message.from === conversationId && typeof message.to === 'number') owed.delete(message.to)
+    if (typeof message.from !== 'number') continue
+    if (message.to === conversationId) {
+      if (open || ((message.report || message.re !== undefined) && !message.echo))
+        owed.add(message.from)
+    } else if (open) (message.to === 'user' ? excluded : waiting).add(message.from)
+  }
   const conversations = []
   let cursor: Cursor | undefined
   do {
@@ -56,6 +67,8 @@ export async function idleNote(
     for (const child of children.get(id) ?? []) if (await working(child)) return true
     return false
   }
+  const seen = await tx.doc(Seen, conversationId)
+  const flagged = new Set((seen.key ?? '').split(',').map(Number))
   const idle = []
   // Branches are ownerless, so subagents are skipped before any document read: this runs before every @ultimate input.
   for (const conversation of conversations) {
@@ -68,24 +81,33 @@ export async function idleNote(
         metadata.inputAt ?? metadata.answerAt ?? now,
         metadata.answerAt ?? metadata.inputAt ?? now,
       )
-    const limit = waiting.has(conversation.id) ? 2 * 3_600_000 : 30 * 60_000
-    if (age <= limit || (await working(conversation.id))) continue
+    // An owed branch already flagged stays flagged until it is answered.
+    const due = owed.has(conversation.id) && (turnEnd || flagged.has(conversation.id))
+    const limit = owed.has(conversation.id)
+      ? 10 * 60_000
+      : waiting.has(conversation.id)
+        ? 2 * 3_600_000
+        : 30 * 60_000
+    if ((!due && age <= limit) || (await working(conversation.id))) continue
     idle.push({
       id: conversation.id,
+      owed: owed.has(conversation.id),
       title: metadata.title ?? 'Untitled',
       idle: age < 3_600_000 ? `${Math.floor(age / 60_000)}m` : `${Math.floor(age / 3_600_000)}h`,
     })
   }
   const key = idle.map((branch) => branch.id).join(',')
-  const seen = await tx.doc(Seen, conversationId)
-  if ((seen.key ?? '') === key) return undefined
+  if ((seen.key ?? '') === key || (turnEnd && !idle.some((branch) => branch.owed))) return undefined
   seen.key = key
   const content = idle.length
     ? [
-        'Open branches idle (30 min, or 2 h while awaiting a reply); check on each or conclude it:',
+        'Open branches idle (30 min, 2 h while awaiting another reply, or waiting on your answer); check on each or conclude it:',
         ...idle
           .slice(0, 10)
-          .map((branch) => `- #${branch.id} ${branch.title} (idle ${branch.idle})`),
+          .map(
+            (branch) =>
+              `- #${branch.id} ${branch.title} (${branch.owed ? 'waits on your answer, ' : ''}idle ${branch.idle})`,
+          ),
         ...(idle.length > 10 ? [`and ${idle.length - 10} more`] : []),
       ].join('\n')
     : 'No branches are idle.'
