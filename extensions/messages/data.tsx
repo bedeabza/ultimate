@@ -79,8 +79,8 @@ export function conversationState(
 
 /**
  * Whether conversation `id` waits on the primary agent: a reply-enabled message to it is open, or its latest report
- * (a routed final answer after it stopped with nothing under way) or reply to the primary agent's message came after
- * the primary agent's latest message to it and after it was last concluded.
+ * (a routed final answer after it stopped with nothing under way) or a branch's reply to the primary agent's message
+ * (`awaits`) came after the primary agent's latest message to it and after it was last concluded.
  */
 function awaitsPrimary(
   id: number,
@@ -93,8 +93,7 @@ function awaitsPrimary(
   for (const message of log.messages) {
     if (message.from === id && message.to === primary) {
       if (isOpen(message)) return true
-      if ((message.report || message.re !== undefined) && !settled(message, concludedSince))
-        reported = true
+      if ((message.report || message.awaits) && !settled(message, concludedSince)) reported = true
     } else if (message.from === primary && message.to === id) reported = false
   }
   return reported
@@ -191,9 +190,14 @@ export function backgroundRow(
           (call.arguments as { to?: unknown } | undefined)?.to !== 'user'),
     )
   if (message.stopReason !== 'stop') return false
+  if (routedTo(log?.messages ?? [], entry).length) return true
   const answered = answeredMessages(log?.messages ?? [], entry.conversationId, entry.id)
   return answered.length > 0 && answered.every((m) => m.reply && m.from !== 'user')
 }
+
+/** The branches a final answer went down to (`board.route`): an answer to them, not to the user. */
+const routedTo = (messages: readonly Message[], entry: EntryRecord) =>
+  messages.filter((m) => m.from === entry.conversationId && m.routed === entry.id)
 
 /**
  * Whether a row of @ultimate's compact transcript is the conversation itself, what the user reads: their inputs, @ultimate's
@@ -282,7 +286,10 @@ export function counterparts(
       const to = /^#(\d+)$/.exec(String((call.arguments as { to?: unknown } | undefined)?.to))
       return to ? [Number(to[1])] : []
     })
-  return answeredMessages(log.messages, entry.conversationId, entry.id).flatMap((m) => idOf(m.from))
+  return [
+    ...answeredMessages(log.messages, entry.conversationId, entry.id).flatMap((m) => idOf(m.from)),
+    ...routedTo(log.messages, entry).flatMap((m) => idOf(m.to)),
+  ]
 }
 
 /** The user's answer to a question they were asked, once it has one. */
