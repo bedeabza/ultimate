@@ -8,6 +8,7 @@ import {
   defineTask,
   GenerationTask,
   hook,
+  InboxDoc,
   LiveDoc,
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
@@ -53,6 +54,47 @@ const Receipts = defineDoc<{ highWater?: number; tasks: Record<string, true> }>(
   initial: () => ({ tasks: {} }),
 })
 const terminal = { status: 'terminal', outcome: { status: 'completed', result: null } } as const
+const LIVE = ['pending', 'running', 'waiting', 'sleeping', 'completing'] as const
+/** Live tasks of `kind` in `conversationId`; messages' tasks are matched by kind, so watchdog needs no import of them. */
+async function live(tx: Tx, kind: string, conversationId: ConversationId) {
+  const found = []
+  for (const status of LIVE) {
+    let cursor: Cursor | undefined
+    do {
+      const page = await tx.scanTasks({ conversationId, kind, status }, 100, cursor)
+      found.push(...page.items)
+      cursor = page.next
+    } while (cursor)
+  }
+  return found
+}
+/** Hands @ultimate the idle note its turn ended with: a branch still waits on its answer. */
+const Owed = defineTask<
+  { ultimate: ConversationId; data: { ids: number[]; text: string } },
+  { phase: 'submit' },
+  null
+>({
+  name: 'watchdog.owed',
+  version: 1,
+  initial: () => ({ phase: 'submit' }),
+  phases: {
+    submit: async (task, runtime, ctx) => {
+      await (await runtime.conversation(task.input.ultimate, ctx))!.submit(
+        {
+          type: 'input',
+          content: task.input.data.text,
+          entry: { kind: 'watchdog.idle', data: task.input.data },
+          requestId: `watchdog-owed:${task.id}`,
+          whenBusy: 'followUp',
+        },
+        ctx,
+      )
+      await runtime.commit(() => terminal, ctx)
+    },
+  },
+  abort: (_task, runtime, ctx) =>
+    runtime.commit(() => ({ status: 'terminal', outcome: { status: 'aborted' } }), ctx),
+})
 const failed = (task: TaskRecord<JsonValue, JsonValue, JsonValue>) =>
   task.kind === GenerationTask.definition.name &&
   task.state.status === 'terminal' &&
@@ -339,6 +381,41 @@ export default function watchdog(host: ExtensionHost) {
     }, context)
   }
 
+  /**
+   * Once @ultimate (`candidate`) is idle, its answers routed down and its replies delivered, a branch still waiting on
+   * its answer gets an idle note that wakes it.
+   */
+  const turnEnded = async (candidate: number) => {
+    // Most commits are other conversations': a snapshot skips them without a write.
+    if (
+      (await host.harness().snapshot(Standing, ROOT_CONVERSATION_ID, context))?.ultimate !==
+      candidate
+    )
+      return
+    await host.harness().commit(async (tx) => {
+      const ultimate = (await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate
+      if (ultimate === undefined || ultimate !== candidate) return
+      if ((await tx.doc(LiveDoc, ultimate)).run || (await tx.doc(InboxDoc, ultimate)).items.length)
+        return
+      if ((await live(tx, 'board.route', ultimate)).length) return
+      const deliveries = await live(tx, 'board.delivery', ROOT_CONVERSATION_ID)
+      if (
+        deliveries.some((task) => {
+          const { message, note } = task.input as { message?: { to?: unknown }; note?: boolean }
+          return message?.to === ultimate && !note
+        })
+      )
+        return
+      const note = await idleNote(tx, host, ultimate, Date.now(), true)
+      if (note)
+        await tx.createTask(
+          Owed,
+          { ultimate, data: note.entries[0].data },
+          { conversationId: ultimate, ownership: { kind: 'conversation' }, background: true },
+        )
+    }, context)
+  }
+
   let unsubscribe: (() => void) | undefined
   let recovery = Promise.resolve()
   const close = async () => {
@@ -361,6 +438,23 @@ export default function watchdog(host: ExtensionHost) {
         change.type === 'submission' && failedInput(change.value) ? [change.value] : [],
       )
       for (const change of publication.changes) {
+        // A run ending, or a route or delivery finishing after it, may be the end of @ultimate's turn.
+        const ended =
+          change.type === 'document'
+            ? change.record.kind === LiveDoc.definition.kind &&
+              change.value !== null &&
+              !change.value.run &&
+              change.conversationId
+            : change.type === 'task' &&
+              change.value.state.status === 'terminal' &&
+              (change.value.kind === 'board.route'
+                ? change.value.conversationId
+                : change.value.kind === 'board.delivery' &&
+                  (change.value.input as { message?: { to?: unknown } }).message?.to)
+        if (typeof ended === 'number')
+          recovery = recovery
+            .then(() => turnEnded(ended))
+            .catch((error: unknown) => host.notice(`Watchdog turn check failed: ${String(error)}`))
         if (change.type !== 'task' || !failed(change.value)) continue
         recovery = recovery
           .then(() =>
@@ -412,7 +506,7 @@ export default function watchdog(host: ExtensionHost) {
   })
   return defineExtension({
     name: 'watchdog',
-    tasks: [Watchdog],
+    tasks: [Watchdog, Owed],
     hooks: [
       hook(GenerationTask, {
         beforeInput: async (_input, { tx, conversationId }) =>

@@ -264,6 +264,12 @@ async function fixture(
     // A branch's reply that keeps @ultimate busy, so another branch's reply steers into the same run.
     if (last.role === 'user' && text.startsWith('Reply from #') && text.includes('STALL'))
       return fauxAssistantMessage([fauxToolCall('hold', {})], { stopReason: 'toolUse' })
+    // A branch's report that has @ultimate message the user.
+    const tell = /\nTELL (.*)/.exec(text)
+    if (last.role === 'user' && text.startsWith('Message from #') && tell)
+      return fauxAssistantMessage([fauxToolCall('message', { to: 'user', text: tell[1] })], {
+        stopReason: 'toolUse',
+      })
     // @ultimate (#1) answers a branch's reply or report only to weigh in: any other final answer would go down to it.
     const fromBranch = /^(Reply|Message) from #(\d+)/.exec(text)
     if (
@@ -1572,6 +1578,18 @@ it("routes @ultimate's final answer to a branch's reply back to the branch, once
     [1, undefined, undefined],
     [undefined, true, true],
   ])
+})
+it("keeps @ultimate's run going after a message to the user while a branch's report waits on its answer", async () => {
+  // ctp #20538 reported; @ultimate messaged only the user, its turn ended there, and the branch sat idle for 2 h.
+  const f = await fixture()
+  const b = await branched(f)
+  await b.later('Go\nTELL Status update')
+  await until(async () => (await f.log())!.messages.some((m) => m.from === 1 && m.routed))
+  await b.settled()
+  const toUser = (await f.log())!.messages.filter((m) => m.from === 1 && m.to === 'user')
+  expect(toUser.map((m) => m.text)).toEqual(['Status update'])
+  const routed = (await f.log())!.messages.find((m) => m.from === 1 && m.routed)!
+  expect(routed).toMatchObject({ to: b.id, text: 'Done' })
 })
 it("routes @ultimate's final answer to every branch whose reply shared its run", async () => {
   // omarchy-config: #45921's reply started @ultimate's run, #46397's steered into it 14 s later; the weigh-in reached

@@ -931,10 +931,10 @@ it('includes only idle open branches, does not repeat unchanged IDs, clears the 
   expect((await note())?.entries[0].model[0].content).toContain('and 2 more')
 })
 
-it('reports a branch idle after 30 minutes, and one awaiting a reply only after 2 h', async () => {
+it('reports a branch idle after 30 minutes, one awaiting another reply after 2 h, and one awaiting @ultimate after 10 min', async () => {
   const f = await fixture()
   const ids: Record<string, ConversationId> = {}
-  for (const name of ['stalled', 'fresh', 'asking']) {
+  for (const name of ['stalled', 'fresh', 'asking', 'owed']) {
     const id = await f.conversation(name)
     ids[name] = id
     await f.harness.commit(async (tx) => {
@@ -943,24 +943,68 @@ it('reports a branch idle after 30 minutes, and one awaiting a reply only after 
     }, context)
   }
   await f.harness.commit(async (tx) => {
-    ;(await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.push({
-      id: 1,
-      from: ids.asking,
-      to: f.ultimate,
-      text: 'Which option?',
-      at: 0,
-      reply: true,
-      state: 'delivered',
-    })
+    ;(await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.push(
+      {
+        id: 1,
+        from: ids.asking,
+        to: ids.stalled,
+        text: 'Which option?',
+        at: 0,
+        reply: true,
+        state: 'delivered',
+      },
+      {
+        id: 2,
+        from: ids.owed,
+        to: f.ultimate,
+        text: 'Which option?',
+        at: 0,
+        reply: true,
+        state: 'delivered',
+      },
+    )
   }, context)
   const note = (now: number) =>
     f.harness.commit((tx) => idleNote(tx, f.host, f.ultimate, now), context)
+  expect((await note(11 * 60_000))?.entries[0].model[0].content).toContain(
+    `- #${ids.owed} owed (waits on your answer, idle 11m)`,
+  )
   const early = await note(45 * 60_000)
-  expect(early?.entries[0].data.ids).toEqual([ids.stalled])
+  expect(early?.entries[0].data.ids).toEqual([ids.stalled, ids.owed])
   expect(early?.entries[0].model[0].content).toContain(`- #${ids.stalled} stalled (idle 45m)`)
   expect((await note(2 * 3_600_000 + 1))?.entries[0].data.ids).toEqual([
     ids.stalled,
     ids.fresh,
     ids.asking,
+    ids.owed,
   ])
+})
+
+it("wakes @ultimate when its turn ends while a branch's report still waits on its answer", async () => {
+  // ctp #20538 reported; @ultimate answered only the user, and the watchdog flagged the branch 2 h later.
+  const f = await fixture()
+  const branch = await f.conversation('Reporting branch')
+  await f.harness.commit(async (tx) => {
+    ;(await tx.doc(Branch, branch)).branch = { from: ROOT_CONVERSATION_ID, at: 0, intent: 'x' }
+    ;(await tx.doc(Metadata, branch)).answerAt = Date.now()
+    ;(await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.push({
+      id: 1,
+      from: branch,
+      to: f.ultimate,
+      text: 'Done; which next?',
+      at: Date.now(),
+      reply: false,
+      report: true,
+      state: 'delivered',
+    })
+  }, context)
+  await (await f.submit(f.ultimate, 'hello')).wait(context)
+  await until(async () => (await f.entries(f.ultimate, 'watchdog.idle')).length === 1)
+  expect((await f.entries(f.ultimate, 'watchdog.idle'))[0].data).toMatchObject({
+    ids: [branch],
+  })
+  // The note's own run ends with the branch still flagged: no second note, no loop.
+  await (await f.harness.conversation(f.ultimate, context))!.waitForIdle(context)
+  await f.harness.waitForIdle(context)
+  expect(await f.entries(f.ultimate, 'watchdog.idle')).toHaveLength(1)
 })

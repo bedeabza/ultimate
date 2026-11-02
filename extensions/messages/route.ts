@@ -108,7 +108,7 @@ async function children(tx: Tx, id: ConversationId): Promise<boolean> {
  * would wait on it forever. An echo (a branch's answer to a routed answer) routes nowhere, so routing goes back and
  * forth at most once; any other input (the user's, a landing card) leaves the answer local.
  */
-async function reported(host: ExtensionHost, tx: Tx, starter: number, answered: number[]) {
+export async function reported(host: ExtensionHost, tx: Tx, starter: number, answered: number[]) {
   const latest = new Map<number, number>()
   for (const entryId of answered) {
     const entry = await tx.entry(entryId as never)
