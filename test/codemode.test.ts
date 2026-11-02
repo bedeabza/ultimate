@@ -116,7 +116,12 @@ it('reads an inactive chapter through the sandbox and rejects project with chapt
   expect(result.data.isError).not.toBe(true)
   expect(result.data.details.value).toMatchObject({
     entries: live,
-    search: live,
+    search: live.map(({ id, conversationId, kind }) => ({
+      id,
+      conversationId,
+      kind,
+      snippet: expect.stringContaining('closed-chapter-needle'),
+    })),
     conversations: expect.arrayContaining([
       expect.objectContaining({ id: server.root.id }),
       expect.objectContaining({
@@ -751,6 +756,33 @@ it('reads stored history and documents from before a reset', async () => {
   })
   expect((result.data.details.value as { matches: number }).matches).toBeGreaterThan(0)
   expect((result.data.details.value as { old: number }).old).toBeGreaterThan(0)
+})
+
+it('search returns snippets and skips system prompts, not whole entries', async () => {
+  // Whole entries ran ctp's scripts out of sandbox memory; a large match must come back as a short snippet.
+  const { server } = await fixture()
+  const padding = 'x'.repeat(100_000)
+  await server.harness.commit(async (tx) => {
+    await tx.appendEntry(server.root.id, {
+      kind: 'pi.system',
+      data: { text: 'snippet-needle in a system prompt' },
+    })
+    await tx.appendEntry(server.root.id, {
+      kind: 'chapter.note',
+      data: { text: `${padding}snippet-needle${padding}` },
+    })
+  }, context)
+  const result = await run(server, `return await ultimate.search(['snippet', 'needle'].join('-'));`)
+  expect(result.data.isError).not.toBe(true)
+  const hits = result.data.details.value as { kind: string; snippet: string }[]
+  expect(hits).toEqual([
+    {
+      id: expect.any(Number),
+      conversationId: server.root.id,
+      kind: 'chapter.note',
+      snippet: `…${'x'.repeat(200)}snippet-needle${'x'.repeat(200)}…`,
+    },
+  ])
 })
 
 it('persists store over two calls and harness close/reopen; discards failed writes', async () => {
