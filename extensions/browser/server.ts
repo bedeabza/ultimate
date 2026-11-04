@@ -63,6 +63,8 @@ const stepTimeoutMs = 30_000
 const untilTimeoutMs = 300_000
 /** How long closing a context, or the browser after it, may take before it counts as wedged. */
 const closeTimeoutMs = 5_000
+/** A failed `browser` step, named by its number: the call's error result leads with it. */
+class StepFailure extends Error {}
 
 function timeout(ms: number) {
   return Object.assign(new Error(`timed out after ${ms / 1000}s`), { name: 'TimeoutError' })
@@ -291,8 +293,7 @@ export default function browserExtension(host: ExtensionHost) {
                   `Step ${index + 1}: OK${value === undefined ? '' : ` ${JSON.stringify(value)}`}`,
                 )
               } catch (error) {
-                outcomes.push(`Step ${index + 1}: ${String(error)}`)
-                throw error
+                throw new StepFailure(`Step ${index + 1}: ${String(error)}`, { cause: error })
               }
             }
             return args.screenshot === false ? undefined : guard(capture(page, png))
@@ -424,9 +425,11 @@ export default function browserExtension(host: ExtensionHost) {
         ],
       }
     } catch (error) {
+      // The failure leads; what the page logged (a sign-in 401 on load) and the steps before it follow as context.
+      const failure = error instanceof StepFailure ? error.message : String(error)
       return {
         isError: true,
-        output: [{ type: 'text' as const, text: [...outcomes, String(error)].join('\n') }],
+        output: [{ type: 'text' as const, text: [failure, ...outcomes].join('\n') }],
       }
     } finally {
       context.abortSignal?.removeEventListener('abort', abort)

@@ -29,7 +29,7 @@ export interface Call {
   conversationId?: number
   taskId?: number
   entryId?: number
-  /** Record neither arguments nor result (a tool's live in the transcript). */
+  /** Record no result, and arguments only when the call fails (a tool's live in the transcript). */
   sealed?: boolean
   /** A read-only poll: on success, counted in `polls()` instead of written, with the plain calls it makes. */
   poll?: boolean
@@ -89,9 +89,10 @@ function failure(error: unknown, credentials: boolean) {
 }
 
 /**
- * What a tool's error result says, cut at about 300 characters: its error diagnostics, then its text. A shell command
- * that exits nonzero has no text parts, its retained output tail sits in `structuredOutput.output`, and its one error
- * diagnostic says `Command exited with code 2`; that is the row's error.
+ * What a tool's error result says: its error diagnostics, then its text, cut at about 300 characters. A shell command
+ * that exits nonzero has no text parts and one error diagnostic, `Command exited with code 2`; the last 300 characters
+ * of its retained output (`structuredOutput.output`, where its stderr ends up) follow, since a failure prints its cause
+ * last.
  */
 function toolError(result: ToolExecutionResult) {
   const text = [
@@ -100,7 +101,15 @@ function toolError(result: ToolExecutionResult) {
     ),
     ...(result.output ?? []).flatMap((part) => (part.type === 'text' ? [part.text] : [])),
   ].join('\n')
-  return text.length <= LIMIT ? text : text.slice(0, LIMIT) + '…'
+  const head = text.length <= LIMIT ? text : text.slice(0, LIMIT) + '…'
+  const structured = result.structuredOutput
+  const output =
+    structured && typeof structured === 'object' && !Array.isArray(structured)
+      ? structured.output
+      : undefined
+  const tail = typeof output === 'string' ? output.trimEnd() : ''
+  if (!tail) return head
+  return `${head}\n${tail.length <= LIMIT ? tail : '…' + tail.slice(-LIMIT)}`
 }
 
 /** JSON of `value`, cut at about 300 characters, with values under secret-looking keys replaced. */
@@ -266,7 +275,8 @@ export function callTrace(file: string | (() => string), retention = { rows: 200
           call.name,
           ok ? 1 : 0,
           ok ? null : failure(value, credentials),
-          args ?? null,
+          // A sealed call (a tool) keeps its arguments when it fails, so its row says what failed.
+          args ?? (!ok && !credentials ? summary(call.args) : undefined) ?? null,
           (ok && !sealed && summary(value)) || null,
           context.conversationId ?? null,
           context.taskId ?? null,
@@ -391,6 +401,7 @@ CREATE INDEX IF NOT EXISTS calls_at ON calls (at);`)
             caller: caller?.done === false ? caller.extension : 'agent',
             callee: extension.name,
             name: tool.name,
+            args,
             conversationId: api.conversationId,
             taskId: api.taskId,
             entryId: input?.kind === 'model' ? input.assistant : undefined,

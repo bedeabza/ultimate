@@ -615,7 +615,7 @@ it('records a tool that returns an error result as failed, with its text', async
   trace.close()
 })
 
-it('names a failed shell command by its exit code, from the error diagnostic', async () => {
+it('keeps a failed shell command with its exit code and the tail of its output', async () => {
   // Pi's bash returns a nonzero exit as an error result with no text parts: the exit code is its error diagnostic.
   const exited = {
     isError: true,
@@ -642,8 +642,11 @@ it('names a failed shell command by its exit code, from the error diagnostic', a
     {} as never,
   )
   const [bashRow] = trace.reader.query().filter((row) => row.name === 'bash')
-  expect(bashRow).toMatchObject({ ok: false, error: 'Command exited with code 2' })
-  expect(bashRow).not.toHaveProperty('args')
+  expect(bashRow).toMatchObject({
+    ok: false,
+    error: 'Command exited with code 2\nmake: *** [all] Error 2',
+    args: '{"command":"make all"}',
+  })
   trace.close()
 })
 
