@@ -43,6 +43,11 @@ function useStartInView() {
  */
 export function PinnedPrompt() {
   const id = useConversation((conversation) => conversation.id)
+  // The acknowledged prompt is kept per conversation: read it only once the conversation is known.
+  return id === undefined ? null : <Pinned id={id} key={id} />
+}
+
+function Pinned({ id }: { id: number }) {
   const agent = useConversation((conversation) => conversation.agent)
   const owned = useConversationSummary(id)?.parentConversationId
   const entries = useTranscript()
@@ -50,15 +55,18 @@ export function PinnedPrompt() {
   // A new `pi.system` entry in the stream means the prompt changed: ask for it again.
   const latest = entries.findLast((entry) => entry.kind === 'pi.system')?.id
   const [seen, setSeen] = useUiState<number | null>(`context.seen.${id}`, null)
+  const enabled = owned === undefined
   const shown = useAction(
     CurrentPromptAction,
     seen === null ? {} : { since: seen },
     // Without a prompt there is nothing to pin; a failure leaves the pin out rather than raising a notice.
-    { enabled: id !== undefined && owned === undefined, onError: () => {} },
+    { enabled, onError: () => {} },
   )
   const { refetch } = shown
-  // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
-  useEffect(() => void refetch(), [latest, refetch])
+  useEffect(() => {
+    // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
+    if (enabled) void refetch()
+  }, [latest, enabled, refetch])
   const current = shown.data
   useEffect(() => {
     if (seen === null && current?.at !== undefined) setSeen(current.at)

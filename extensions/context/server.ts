@@ -21,11 +21,18 @@ export const actions = {
     const prompt = promptOf(view.messages)
     const at = view.entries.findLast((entry) => entry.kind === 'pi.system')?.id
     if (since === undefined || since === at) return { prompt, ...(at && { at }) }
-    const before = await conversation.context(context, { at: since as EntryId })
+    const before = await conversation
+      .context(context, { at: since as EntryId })
+      .catch((error: unknown) => {
+        // An entry this conversation can't see (another conversation's) is no baseline: show the prompt without a diff.
+        if (error instanceof Error && error.message.includes('is not visible')) return undefined
+        throw error
+      })
     return {
       prompt,
       ...(at && { at }),
-      ...(before.entries.length > 0 && { diff: comparePrompts(promptOf(before.messages), prompt) }),
+      ...(before &&
+        before.entries.length > 0 && { diff: comparePrompts(promptOf(before.messages), prompt) }),
     }
   }),
 }
