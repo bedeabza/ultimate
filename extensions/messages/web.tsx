@@ -53,7 +53,8 @@ function MessageAnswerLabel({ entry }: { entry: EntryRecord }) {
 /**
  * Stay mounted across surfaces so an Open click can reveal after Agent mounts and loads. `messages:open` names the entry,
  * or the tool call that sent a message (`call`): the response that made it, found in the loaded entries or else in the
- * stored history, which the transcript then pages in.
+ * stored history, which the transcript then pages in. A message's answer card sits beneath its text, which can be long:
+ * once the transcript has shown the response, the card is brought into view.
  */
 function MessageNavigation() {
   const { id, entries, loading } = useConversation()
@@ -63,13 +64,27 @@ function MessageNavigation() {
   useEffect(() => {
     if (!target || surface !== 'agent' || id !== target.conversation || loading) return undefined
     const { call } = target
-    const reveal = (entry: number) =>
+    const reveal = (entry: number) => {
       events.emit('ultimate:reveal-entry', { conversationId: id, entryId: entry })
+      if (!call) return
+      // The transcript may first page in or unfold the row; give it a few seconds to mount the card. Not cancelled with
+      // the effect: a live entry re-runs it long before then, and the search ends by itself.
+      let tries = 30
+      const card = () => {
+        const element = document.querySelector(
+          `[data-entry-id="${entry}"] [data-message-outgoing] [data-questions-card]`,
+        )
+        if (element) element.scrollIntoView({ block: 'center' })
+        else if (--tries > 0) setTimeout(card, 100)
+      }
+      setTimeout(card, 100)
+    }
     const loaded = target.entry ?? (call && callerOf(entries, call.split('/')[0])?.id)
     setTarget(undefined)
+    // Not cancelled with the effect: clearing the target re-runs it before the frame, which would lose the reveal.
     if (loaded) {
-      const frame = requestAnimationFrame(() => reveal(loaded))
-      return () => cancelAnimationFrame(frame)
+      requestAnimationFrame(() => reveal(loaded))
+      return undefined
     }
     if (call)
       api.action(CallerAction, { conversation: id, call }).then(

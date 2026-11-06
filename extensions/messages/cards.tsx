@@ -397,7 +397,8 @@ export function MessageCall({ call, core }: { call: ToolCallView; core: ReactNod
   const sender = useConversation((conversation) => conversation.id)
   const caller = useCaller(call.id)
   if (call.status === 'error' || call.status === 'interrupted') return core
-  const sent = /^Message (\d+) sent\.$/.exec(call.output)
+  // The output may go on after the first sentence ("#12 still waits on your answer…").
+  const sent = /^Message (\d+) sent\./.exec(call.output)
   const message = sent ? log?.messages.find((m) => m.id === Number(sent[1])) : undefined
   const { to, text, reply, steer } = call.args as {
     to?: string
