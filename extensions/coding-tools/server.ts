@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -16,9 +16,14 @@ import {
   type ToolExecutionResult,
   type ToolRegistration,
   wrapTool,
+  hook,
+  GenerationTask,
 } from '@earendil-works/pi-durable'
+import type { Message } from '@earendil-works/pi-ai'
 import {
   type BashExecution,
+  DEFAULT_IMAGE_LIMITS,
+  type ImageProcessor,
   createBashTool,
   createEditTool,
   createReadTool,
@@ -32,6 +37,54 @@ import { CancelAction, CancelledDoc, Committed } from './refs.ts'
 
 /** Lets Pi's read tool shrink an image past the model's limits (2000x2000 by default) instead of refusing it. */
 const images = await createNodePhotonImages()
+
+/** Within Anthropic's limit for requests with many images (2000 px), as the browser tool sends its screenshots. */
+const requestImageLimits = { ...DEFAULT_IMAGE_LIMITS, maxWidth: 1600, maxHeight: 1600 }
+
+/**
+ * `messages` with every image fitted to `requestImageLimits`, whatever put it there (a tool, a paste, history stored
+ * before a limit existed): one oversized image in the history otherwise fails every later request. An image that
+ * cannot be decoded or made to fit becomes a note. Prepared images are cached by content, so each decodes once.
+ */
+export async function fitImages(
+  messages: readonly Message[],
+  processor: ImageProcessor,
+  cache: Map<string, { data: string; mimeType: string } | undefined>,
+) {
+  let changed = false
+  const fitted = await Promise.all(
+    messages.map(async (message) => {
+      if (message.role === 'assistant' || typeof message.content === 'string') return message
+      if (!message.content.some((block) => block.type === 'image')) return message
+      const content = await Promise.all(
+        message.content.map(async (block) => {
+          if (block.type !== 'image') return block
+          const key = createHash('sha256').update(block.data).digest('base64')
+          if (!cache.has(key)) {
+            const prepared = await processor.prepare(
+              Uint8Array.fromBase64(block.data),
+              block.mimeType,
+              requestImageLimits,
+            )
+            if (cache.size >= 1000) cache.delete(cache.keys().next().value!)
+            cache.set(key, prepared && { data: prepared.data, mimeType: prepared.mimeType })
+          }
+          const prepared = cache.get(key)
+          if (prepared?.data === block.data && prepared.mimeType === block.mimeType) return block
+          changed = true
+          return prepared
+            ? { type: 'image' as const, ...prepared }
+            : {
+                type: 'text' as const,
+                text: '[Image omitted: it could not be fitted to the image size limit.]',
+              }
+        }),
+      )
+      return { ...message, content } as Message
+    }),
+  )
+  return changed ? fitted : undefined
+}
 
 function defaultBashTimeout() {
   const seconds = Number(process.env.ULTIMATE_BASH_TIMEOUT ?? 600)
@@ -323,8 +376,17 @@ export default function codingTools(host: Pick<ExtensionHost, 'emit'>) {
       }
     },
   })
+  const fittedImages = new Map<string, { data: string; mimeType: string } | undefined>()
   return defineExtension({
     name: 'coding-tools',
+    hooks: [
+      hook(GenerationTask, {
+        beforeRequest: async (request) => {
+          const messages = await fitImages(request.messages, images, fittedImages)
+          return messages && { messages }
+        },
+      }),
+    ],
     // Each tool keeps its own parameters; the list is only read through the base registration.
     tools: [
       createReadTool({ images }),

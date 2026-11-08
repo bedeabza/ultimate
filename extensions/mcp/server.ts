@@ -1,4 +1,5 @@
 import { Type } from '@earendil-works/pi-ai'
+import { formatDimensionNote, resizeImage } from '@earendil-works/pi-coding-agent'
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable'
 import type { ToolExecutionResult, ToolRegistration } from '@earendil-works/pi-durable'
 import type { CallToolResult } from '@modelcontextprotocol/client'
@@ -57,16 +58,28 @@ function serverArg(args: unknown) {
 }
 
 /** An MCP result for the model: the banner first, then its content; resources and structured content as JSON. */
-export function toOutput(server: string, result: CallToolResult): ToolExecutionResult {
+export async function toOutput(
+  server: string,
+  result: CallToolResult,
+): Promise<ToolExecutionResult> {
   const output: (
     | { type: 'text'; text: string }
     | { type: 'image'; data: string; mimeType: string }
   )[] = [{ type: 'text', text: banner(server) }]
   for (const block of result.content ?? []) {
     if (block.type === 'text') output.push({ type: 'text', text: block.text })
-    else if (block.type === 'image')
-      output.push({ type: 'image', data: block.data, mimeType: block.mimeType })
-    else if (block.type === 'resource' && 'text' in block.resource)
+    else if (block.type === 'image') {
+      // Fitted as the browser tool fits screenshots: a full-size attachment fails the model request.
+      const resized = await resizeImage(Uint8Array.fromBase64(block.data), block.mimeType, {
+        maxWidth: 1600,
+        maxHeight: 1600,
+      })
+      const note = resized
+        ? formatDimensionNote(resized)
+        : '[Image omitted: could not be resized below the inline image size limit.]'
+      if (resized) output.push({ type: 'image', data: resized.data, mimeType: resized.mimeType })
+      if (note) output.push({ type: 'text', text: note })
+    } else if (block.type === 'resource' && 'text' in block.resource)
       output.push({ type: 'text', text: `Resource ${block.resource.uri}:\n${block.resource.text}` })
     else if (block.type === 'resource_link')
       output.push({
@@ -125,7 +138,7 @@ export default async function mcp(host: ExtensionHost) {
     signal?: AbortSignal,
   ) => {
     try {
-      return toOutput(server, await pool.call(server, tool, args, signal))
+      return await toOutput(server, await pool.call(server, tool, args, signal))
     } catch (error) {
       return failure(server, error)
     }

@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 import { createBashTool } from '@earendil-works/pi-durable/tools'
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
-import type { ToolExecutionApi } from '@earendil-works/pi-durable'
+import type { GenerationHooks, HookApi, ToolExecutionApi } from '@earendil-works/pi-durable'
+import type { Message, ToolResultMessage } from '@earendil-works/pi-ai'
 import { afterEach, expect, it, vi } from 'vitest'
 import codingTools from '../extensions/coding-tools/server.ts'
 import { context } from '../server/harness.ts'
@@ -61,6 +62,31 @@ function png(width: number, height: number) {
     chunk('IEND', Buffer.alloc(0)),
   ])
 }
+
+it('fits a stored 4000x3000 image to 1600 px before each model request', async () => {
+  // A full-size MCP attachment in history failed every later request: Anthropic caps many-image requests at 2000 px.
+  const { hooks } = codingTools({ emit: vi.fn<ExtensionHost['emit']>() as ExtensionHost['emit'] })
+  const { beforeRequest } = hooks![0].handlers as Pick<GenerationHooks, 'beforeRequest'>
+  const image = { type: 'image', data: png(4000, 3000).toString('base64'), mimeType: 'image/png' }
+  const messages = [
+    { role: 'user', content: 'read the emails', timestamp: 0 },
+    {
+      role: 'toolResult',
+      toolCallId: 'call',
+      toolName: 'mcp',
+      content: [{ type: 'text', text: 'attachment' }, image],
+      isError: false,
+      timestamp: 0,
+    },
+  ] as Message[]
+  const result = await beforeRequest({ messages }, {} as HookApi, context)
+  const [text, fitted] = (result!.messages[1] as ToolResultMessage).content
+  expect(text).toEqual({ type: 'text', text: 'attachment' })
+  if (fitted.type !== 'image') throw new Error('Expected the image to stay')
+  expect(fitted.mimeType).toBe('image/png')
+  const bytes = Buffer.from(fitted.data, 'base64')
+  expect([bytes.readUInt32BE(16), bytes.readUInt32BE(20)]).toEqual([1600, 1200])
+})
 
 it('reads an image past the 2000 px limit shrunk to fit, keeping its aspect ratio', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'ultimate-read-'))
