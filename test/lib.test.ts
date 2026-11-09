@@ -1,11 +1,11 @@
-import { lstat, mkdir, readdir, readFile, readlink, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { git, isolatable, noCommit, noRepository } from '../lib/git.ts'
 import { readJson, updateJson, writeJson } from '../lib/json-file.ts'
 import { readSettings, updateSettings } from '../lib/settings.ts'
 import { shortTitle } from '../lib/title.ts'
-import { temp } from './helpers.ts'
+import { temp, until } from './helpers.ts'
 
 it('titles a long Markdown prompt by its first meaningful line, cut short', () => {
   const prompt = `## Goal\nDesign a redesign of @ultimate's conversation view (the "chat" mode of the transcript) so it reads as one conversation.\n\n${'More detail. '.repeat(500)}`
@@ -89,4 +89,23 @@ it('trims git output, reports a failed command with its stderr and explains why 
   await git(repo, 'init', '-q', '-b', 'main')
   expect(await isolatable(repo)).toEqual({ reason: noCommit })
   expect(await git({ cwd: repo, timeout: 0 }, 'symbolic-ref', '--short', 'HEAD')).toBe('main')
+})
+
+it('waits out a held index.lock instead of failing', async () => {
+  // A submit failed on a transient .git/index.lock left by a commit in the same checkout.
+  const repo = await temp('ultimate-lib-')
+  await git(repo, 'init', '-q', '-b', 'main')
+  await writeFile(join(repo, 'file'), 'x')
+  await writeFile(join(repo, '.git/index.lock'), '')
+  vi.useFakeTimers({ toFake: ['setTimeout'] })
+  try {
+    const added = git(repo, 'add', 'file')
+    await until(() => vi.getTimerCount() === 1)
+    await rm(join(repo, '.git/index.lock'))
+    await vi.advanceTimersByTimeAsync(200)
+    await added
+  } finally {
+    vi.useRealTimers()
+  }
+  expect(await git(repo, 'diff', '--cached', '--name-only')).toBe('file')
 })

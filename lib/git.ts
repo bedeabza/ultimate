@@ -4,11 +4,29 @@ import { exec } from './exec.ts'
 /** Where and how long a git command runs; defaults: 30 seconds, 1 MiB of output. `timeout: 0` waits indefinitely. */
 export type GitOptions = { cwd: string; timeout?: number; maxBuffer?: number; signal?: AbortSignal }
 
-/** Run git in `cwd` and return its trimmed stdout; a failure rejects with execFile's error, stderr in its message. */
+/** Another git process holds the index: a commit or status in the same checkout, usually gone within a second. */
+const indexLocked = (error: unknown) =>
+  error instanceof Error && /index\.lock'?: File exists/.test(error.message)
+
+/**
+ * Run git in `cwd` and return its trimmed stdout; a failure rejects with execFile's error, stderr in its message. A
+ * held `index.lock` is waited out for up to about 3 seconds before its error stands.
+ */
 export async function git(cwd: string | GitOptions, ...args: string[]) {
   const options = typeof cwd === 'string' ? { cwd } : cwd
-  const { stdout } = await exec('git', args, { timeout: 30000, maxBuffer: 1024 * 1024, ...options })
-  return stdout.trim()
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { stdout } = await exec('git', args, {
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+        ...options,
+      })
+      return stdout.trim()
+    } catch (error) {
+      if (attempt === 6 || !indexLocked(error) || options.signal?.aborted) throw error
+      await new Promise((resolve) => setTimeout(resolve, attempt * 200))
+    }
+  }
 }
 
 export const noRepository = 'Isolation needs a Git repository'
