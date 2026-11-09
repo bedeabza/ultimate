@@ -111,3 +111,19 @@ it('reads an image past the 2000 px limit shrunk to fit, keeping its aspect rati
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+it('hints at the next round when reading a missing file', async () => {
+  // About 40 failed reads a chapter came from reading a file in the round whose other call creates it.
+  const dir = await mkdtemp(join(tmpdir(), 'ultimate-read-'))
+  try {
+    const read = codingTools({
+      emit: vi.fn<ExtensionHost['emit']>() as ExtensionHost['emit'],
+    }).tools!.find((tool) => tool.name === 'read')!
+    const api = { env: new NodeExecutionEnv({ cwd: dir }) } as unknown as ToolExecutionApi
+    await expect(read.execute({ path: 'deck.txt' }, api, context)).rejects.toThrow(
+      /^ENOENT[^\n]*deck\.txt.*\nIf another tool call in this same round creates it, read it in the next round/s,
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

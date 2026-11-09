@@ -38,6 +38,10 @@ import { CancelAction, CancelledDoc, Committed } from './refs.ts'
 /** Lets Pi's read tool shrink an image past the model's limits (2000x2000 by default) instead of refusing it. */
 const images = await createNodePhotonImages()
 
+/** Added to a missing file's read error: about 40 such failures a chapter came from reading in the creating round. */
+export const sameRoundHint =
+  'If another tool call in this same round creates it, read it in the next round: tool calls in one round run in parallel.'
+
 /** Within Anthropic's limit for requests with many images (2000 px), as the browser tool sends its screenshots. */
 const requestImageLimits = { ...DEFAULT_IMAGE_LIMITS, maxWidth: 1600, maxHeight: 1600 }
 
@@ -377,6 +381,19 @@ export default function codingTools(host: Pick<ExtensionHost, 'emit'>) {
     },
   })
   const fittedImages = new Map<string, { data: string; mimeType: string } | undefined>()
+  const read = createReadTool({ images })
+  const readTool = defineTool({
+    ...read,
+    async execute(args, api, context) {
+      try {
+        return await read.execute(args, api, context)
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith('ENOENT'))
+          throw new Error(`${error.message}\n${sameRoundHint}`, { cause: error })
+        throw error
+      }
+    },
+  })
   return defineExtension({
     name: 'coding-tools',
     hooks: [
@@ -388,12 +405,7 @@ export default function codingTools(host: Pick<ExtensionHost, 'emit'>) {
       }),
     ],
     // Each tool keeps its own parameters; the list is only read through the base registration.
-    tools: [
-      createReadTool({ images }),
-      createWriteTool(),
-      createEditTool(),
-      bashTool,
-    ] as ToolRegistration[],
+    tools: [readTool, createWriteTool(), createEditTool(), bashTool] as ToolRegistration[],
     wraps: [
       wrapTool(createBashTool(), (bash) => ({
         ...bash,
