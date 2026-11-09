@@ -6,7 +6,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { definitionAgent, discoverAgents, hostDefaultModel } from '../../lib/agents.ts'
 import { LineageApi, Roots } from '../lineage/api.ts'
 import { actingAs } from '../../lib/acting-as.ts'
-import { imagesParameter } from './images.ts'
+import { imagesParameter, resolveImages } from './images.ts'
 import { send } from './send.ts'
 import { Started } from './addresses.ts'
 
@@ -29,6 +29,11 @@ export const branchTool = (host: ExtensionHost) =>
       const from = await actingAs(host, api.conversationId, ctx)
       let id = await api.memo<number>('branch-id', ctx)
       if (id === undefined) {
+        // A bad images value fails here, before the fork exists, not in the first message after it.
+        if (input.images !== undefined)
+          await host
+            .harness()
+            .commit((tx) => resolveImages(tx, api.conversationId, input.images!), ctx)
         const lineage = host.need(LineageApi)
         const roots = (await host.harness().snapshot(Roots, ROOT_CONVERSATION_ID, ctx))?.roots ?? []
         const root =

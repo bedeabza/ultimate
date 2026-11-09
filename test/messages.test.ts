@@ -1431,6 +1431,29 @@ it('forwards images into a new branch with its prompt', async () => {
   const entry = await placed(f, message.to as number, message.id)
   expect(imagesIn(entry)).toEqual([png(0)])
 })
+it('refuses bad images before it creates the branch', async () => {
+  // A bad images value used to fail on the first message, after the branch existed.
+  const f = await fixture()
+  const tool = (await f.opened.root.agent(context)).deferred.find((t) => t.name === 'branch')!
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = [1]
+    await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
+  }, context)
+  const count = async () =>
+    (await f.opened.harness.commit((tx) => tx.scanConversations({}, 100), context)).items.length
+  const before = await count()
+  await (
+    await f.opened.root.submit(
+      {
+        type: 'input',
+        content: 'BRANCH ' + JSON.stringify({ prompt: 'Fix', isolated: false, images: 'latest' }),
+      },
+      context,
+    )
+  ).wait(context)
+  expect(f.observed.join('\n')).toContain('found no images in this turn')
+  expect(await count()).toBe(before)
+})
 it("routes a branch's later final answer to its starter once, waking it when the branch stopped idle", async () => {
   const f = await fixture()
   const b = await branched(f)
