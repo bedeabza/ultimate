@@ -716,3 +716,25 @@ it('attaches an in-process tool call to its running caller, and a late callback 
   expect(inner.trace).not.toBe(outer.trace)
   trace.close()
 })
+
+it('names a dispatching tool row after the tool it ran', async () => {
+  // The dream's stats counted every MCP call as `mcp` and listed the MCP tools as unused.
+  const trace = callTrace(join(await temp(), 'trace.sqlite'))
+  trace.open()
+  const [mcp] = trace.tools({
+    name: 'mcp',
+    tools: [
+      {
+        name: 'mcp',
+        execute: async () => ({ output: [] }),
+        traceName: (args: { action?: string; tool?: string }) =>
+          args.action === 'call' ? `mail__${args.tool}` : undefined,
+      } as never,
+    ],
+  }).tools!
+  const api = { conversationId: 1, taskId: 1, callId: 'call', getTask: async () => undefined }
+  await mcp.execute({ action: 'call', tool: 'get_attachment' }, api as never, {} as never)
+  await mcp.execute({ action: 'servers' }, api as never, {} as never)
+  expect(trace.reader.query().map((row) => row.name)).toEqual(['mail__get_attachment', 'mcp'])
+  trace.close()
+})

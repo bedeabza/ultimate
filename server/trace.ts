@@ -53,6 +53,8 @@ export interface CallRow {
   entry?: number
 }
 export type CallTree = CallRow & { children: CallTree[] }
+/** A tool that runs others (MCP's `mcp`) names its row after the one a call ran; undefined keeps its own name. */
+export type TracedTool = ToolRegistration & { traceName?: (args: unknown) => string | undefined }
 export interface TraceQuery {
   trace?: string
   conversation?: number
@@ -372,7 +374,7 @@ CREATE INDEX IF NOT EXISTS calls_at ON calls (at);`)
     /** Every tool of `extension` runs traced, linked to its conversation, task and tool-call entry. */
     tools(extension: Extension): Extension {
       if (!extension.tools?.length) return extension
-      const traced = (tool: ToolRegistration): ToolRegistration => ({
+      const traced = (tool: TracedTool): ToolRegistration => ({
         ...tool,
         execute: async (args, api, context) => {
           let input: ToolTaskInput | undefined
@@ -400,7 +402,7 @@ CREATE INDEX IF NOT EXISTS calls_at ON calls (at);`)
             kind: 'tool',
             caller: caller?.done === false ? caller.extension : 'agent',
             callee: extension.name,
-            name: tool.name,
+            name: tool.traceName?.(args) ?? tool.name,
             args,
             conversationId: api.conversationId,
             taskId: api.taskId,

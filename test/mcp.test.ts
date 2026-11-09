@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { ToolRegistration } from '@earendil-works/pi-durable'
-import mcp, { actions } from '../extensions/mcp/server.ts'
+import mcp, { actions, toOutput } from '../extensions/mcp/server.ts'
 import type { ExtensionHost } from '../server/extensions.ts'
 import { removeTemp, temp, until } from './helpers.ts'
 
@@ -68,6 +68,8 @@ async function fakeServer() {
         if (!verified) return send(response, 400, { error: 'invalid_grant' })
         return send(response, 200, { access_token: 'token-1', token_type: 'Bearer' })
       }
+      if (url.pathname === '/attachments/report.pdf')
+        return response.writeHead(200).end('%PDF-1.4 report')
       if (url.pathname !== '/mcp') return send(response, 404)
       if (request.headers.authorization !== 'Bearer token-1')
         return send(response, 401, undefined, {
@@ -124,7 +126,7 @@ async function fakeServer() {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     expect(errors).toEqual([])
   })
-  return { url: `${base}/mcp`, calls }
+  return { url: `${base}/mcp`, base, calls }
 }
 
 async function install(url: string) {
@@ -202,4 +204,29 @@ it('signs in through OAuth, caches the tools and bridges them behind codemode wi
     {} as never,
   )
   expect(text(called)).toContain('again')
+})
+
+it('saves images and resource links into the save directory and returns only their paths', async () => {
+  // A mail attachment came back as a resource link plus the full image, both into the context.
+  const server = await fakeServer()
+  const dir = await temp()
+  cleanup.push(() => removeTemp(dir))
+  const png = 'iVBORw0KGgo='
+  const result = await toOutput(
+    'fake',
+    {
+      content: [
+        { type: 'text', text: 'one attachment' },
+        { type: 'resource_link', uri: `${server.base}/attachments/report.pdf`, name: 'report.pdf' },
+        { type: 'image', data: png, mimeType: 'image/png' },
+      ],
+    },
+    { dir: join(dir, 'inbox') },
+  )
+  expect(result.output!.some((block) => block.type === 'image')).toBe(false)
+  expect(text(result)).toContain('one attachment')
+  expect(text(result)).toContain(`Saved ${join(dir, 'inbox/report.pdf')}`)
+  expect(text(result)).toContain(`Saved ${join(dir, 'inbox/image-1.png')}`)
+  expect(await readFile(join(dir, 'inbox/report.pdf'), 'utf8')).toBe('%PDF-1.4 report')
+  expect((await readFile(join(dir, 'inbox/image-1.png'))).toString('base64')).toBe(png)
 })

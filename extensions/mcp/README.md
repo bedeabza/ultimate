@@ -18,7 +18,7 @@ A `url` speaks streamable HTTP; a `command` (with optional `args`, `env` and `cw
 
 ## Tools
 
-- `mcp` (offered to the model): `servers` lists each server with its state and tools, `tools {server}` gives one server's tool schemas (connecting first), `call {server, tool, arguments}` runs one.
+- `mcp` (offered to the model): `servers` lists each server with its state and tools, `tools {server}` gives one server's tool schemas (connecting first), `call {server, tool, arguments}` runs one. With `save: <dir>` (relative to the conversation's cwd), a call writes its images, binary resources and resource links (downloaded) into that directory and returns only their paths, so attachments stay out of the context. Its trace row is named after the MCP tool (`<server>__<tool>`), so the dream's stats count each one.
 - `mcp_search` (deferred, loaded through `tool_search`): searches the cached tools by name and description.
 - Every cached MCP tool is registered as `<server>__<tool>` with `callers: ['tools']`: the model is never offered it, so the prompt stays one tool however many servers there are, and codemode scripts call it directly as `tools.<server>__<tool>(args)`.
 - An agent whose definition lists its `tools` gets only what it names: @ultimate lists `mcp` and calls servers through it (also from codemode, as `tools.mcp({action: 'call', …})`).
