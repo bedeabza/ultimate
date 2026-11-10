@@ -1,6 +1,8 @@
 /** Messaging another project's Ultimate: `tell` out, and the `remote` and `remoteReply` actions it posts in. */
 import { randomUUID } from 'node:crypto'
-import type { Context, JsonValue } from '@earendil-works/chord'
+import type { Context } from '@earendil-works/chord/context'
+import type { JsonValue } from '@earendil-works/chord/json'
+import type { EntryId } from '@earendil-works/pi-durable'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ActionContext } from '../../server/actions.ts'
@@ -11,6 +13,7 @@ import { discoverAgents } from '../../lib/agents.ts'
 import { Messages, MessageSent } from './api.ts'
 import type { Message } from './api.ts'
 import { append } from './log.ts'
+import { isOpen } from '../../lib/message-state.ts'
 import { remoteLabel, senderName } from './addresses.ts'
 import { delivery } from './delivery.ts'
 
@@ -74,6 +77,11 @@ export async function tell(
   input: { project: string; machine?: string; text: string; reply?: boolean },
   ctx: Context,
   signal?: AbortSignal,
+  /**
+   * `board.route` forwarding answer `routed` to the Ultimate whose request a branch worked on: `key` makes the tell
+   * once-only (a replayed route finds its message), and it is not an answer to an open question of that Ultimate.
+   */
+  route?: { key: string; routed: EntryId },
 ) {
   const standing = await host.harness().snapshot(Standing, ROOT_CONVERSATION_ID, ctx)
   if (standing?.ultimate !== from)
@@ -86,14 +94,11 @@ export async function tell(
   const reply = input.reply ?? true
   // An Ultimate answering another's question answers it; telling back would start a conversation between agents.
   const asking = (
-    (await host.harness().snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages ?? []
+    route
+      ? []
+      : ((await host.harness().snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages ?? [])
   ).find(
-    (m) =>
-      m.from === 'remote' &&
-      m.to === from &&
-      m.reply &&
-      m.remote?.project === target.name &&
-      (m.state === 'sent' || m.state === 'delivered'),
+    (m) => m.from === 'remote' && m.to === from && m.remote?.project === target.name && isOpen(m),
   )
   if (asking)
     throw new Error(
@@ -102,9 +107,19 @@ export async function tell(
   const remote = {
     project: target.name,
     machine: target.machine ?? self.machine,
-    key: randomUUID(),
+    // The target delivers a key once from any sender, so a route's key names this Ultimate too.
+    key: route ? `${self.project}@${self.machine}:${route.key}` : randomUUID(),
   }
+  // A replayed route finds its tell: delivered, it is done; otherwise it posts again, and the target delivers a key once.
+  const sent = route
+    ? (await host.harness().snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages.find(
+        (m) => m.to === 'remote' && m.remote?.key === remote.key,
+      )
+    : undefined
+  if (sent?.state === 'delivered' && sent.remote?.id !== undefined)
+    return { message: sent.id, delivered: sent.remote.id }
   const id = await host.harness().commit(async (tx) => {
+    if (sent) return sent.id
     const message = await append(tx, {
       from,
       to: 'remote',
@@ -112,6 +127,7 @@ export async function tell(
       reply,
       state: 'sent',
       remote,
+      ...(route ? { routed: route.routed } : {}),
     })
     if (reply)
       (await tx.doc(RemoteDoc, ROOT_CONVERSATION_ID)).told[remote.key] = {

@@ -1,5 +1,6 @@
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
-import type { JsonValue } from '@earendil-works/chord'
+import { onCommit } from '../../lib/commits.ts'
+import type { JsonValue } from '@earendil-works/chord/json'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { isRetryableAssistantError } from '@earendil-works/pi-ai/utils/retry'
 import {
@@ -433,7 +434,7 @@ export default function watchdog(host: ExtensionHost) {
   })
   host.onOpen(async () => {
     unsubscribe?.()
-    unsubscribe = host.harness().subscribeCommits((publication) => {
+    unsubscribe = onCommit(host.harness(), (publication) => {
       const inputs = publication.changes.flatMap((change) =>
         change.type === 'submission' && failedInput(change.value) ? [change.value] : [],
       )
@@ -441,8 +442,8 @@ export default function watchdog(host: ExtensionHost) {
         // A run ending, or a route or delivery finishing after it, may be the end of @ultimate's turn.
         const ended =
           change.type === 'document'
-            ? change.record.kind === LiveDoc.definition.kind &&
-              change.value !== null &&
+            ? change.kind === 'change' &&
+              change.record.kind === LiveDoc.definition.kind &&
               !change.value.run &&
               change.conversationId
             : change.type === 'task' &&

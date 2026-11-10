@@ -3,16 +3,18 @@ import { mkdirSync, mkdtempSync } from 'node:fs'
 import { mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import { copyJson } from '@earendil-works/chord'
-import type { Context } from '@earendil-works/chord'
+import { copyJson } from '@earendil-works/chord/json'
+import type { Context } from '@earendil-works/chord/context'
 import type { JsonObject } from '@earendil-works/pi-durable'
 import { withAbortSignal } from '@earendil-works/chord/context'
 import { defineEntry, defineTask, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationDocToken, ConversationId, Tx } from '@earendil-works/pi-durable'
 import { git } from '../../lib/git.ts'
+import { needsRestart as restartNeeded } from '../../lib/layers.ts'
 import { runGroup, sweepPidFiles } from '../../lib/process-group.ts'
+import { weightDelta } from '../../lib/token-weight.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { CheckRan, SubmissionLanded } from './api.ts'
+import { CheckRan, SubmissionFailed, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
@@ -85,7 +87,12 @@ export const log = (
 ) => {
   const at = Date.now()
   if (data.step)
-    entry.steps.push({ step: data.step, at, ...(data.check ? { check: data.check } : {}) })
+    entry.steps.push({
+      step: data.step,
+      at,
+      ...(data.runs ? { runs: data.runs } : {}),
+      ...(data.check ? { check: data.check } : {}),
+    })
   return tx.appendEntry(LanderLog, id, {
     data: {
       submission: entry.id,
@@ -226,7 +233,10 @@ export async function runLanderCheck(
   } finally {
     clearTimeout(stallTimer)
     clearTimeout(totalTimer)
-    await rm(tmp, { recursive: true, force: true })
+    // Best effort: detached processes an e2e test leaves behind (supervisors, preview homes) can still be writing here,
+    // the same race #43 fixed in test/sweep-temp.ts. Without retry and catch, rm throws ENOTEMPTY and refuses a landing
+    // whose checks passed. sweepChecks removes the leftover at the next start. Can go once no check leaves writers.
+    await rm(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }).catch(() => {})
   }
 }
 
@@ -261,7 +271,8 @@ export const landerSettings = async (host: Pick<Host, 'projectSettings'>): Promi
     throw new Error('lander.push must be a remote name')
   return {
     checks: checks as Settings['checks'],
-    ...(lander?.push ? { push: lander.push } : {}),
+    // A preview never pushes; its git hooks refuse it too (extensions/instance).
+    ...(lander?.push && !process.env.ULTIMATE_PREVIEW_BRANCH ? { push: lander.push } : {}),
   }
 }
 export const contains = (cwd: string, ancestor: string, descendant: string) =>
@@ -292,6 +303,7 @@ const landedOutcome = (landed: Landed): LanderOutcome => ({
   commits: landed.commits,
   paths: landed.paths,
   flaky: landed.flaky,
+  ...(landed.weight ? { weight: landed.weight } : {}),
 })
 type State =
   | { phase: 'next' }
@@ -374,13 +386,22 @@ export function createLander(
           )?.landed
         /**
          * Log a step; a check's `output` tail goes to the lander log only, not the submission's steps. A run check's
-         * step also emits `workspaces.check`, with `ran` its duration and whether a watchdog stopped it.
+         * step also emits `workspaces.check`, with `ran` its duration and whether a watchdog stopped it. A step that
+         * starts a check names its command in `runs`.
          */
         const step = (
           text: string,
-          result?: LanderEntry['check'],
-          output?: string,
-          ran?: { ms: number; timedOut?: boolean },
+          {
+            runs,
+            result,
+            output,
+            ran,
+          }: {
+            runs?: string
+            result?: LanderEntry['check']
+            output?: string
+            ran?: { ms: number; timedOut?: boolean }
+          } = {},
         ) =>
           runtime.commit(async (tx) => {
             const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
@@ -389,6 +410,7 @@ export function createLander(
             saved.step = text
             await log(tx, runtime.conversationId, saved, {
               step: text,
+              ...(runs ? { runs } : {}),
               ...(result ? { check: result } : {}),
               ...(output ? { output } : {}),
             })
@@ -420,6 +442,13 @@ export function createLander(
             }
             for (const old of Object.keys(draft.results).slice(0, -kept)) delete draft.results[old]
             await log(tx, runtime.conversationId, entry, outcome)
+            if (outcome.outcome === 'failed')
+              await host.emit(tx, SubmissionFailed, {
+                submission: id,
+                conversationId: entry.conversationId,
+                target: entry.target,
+                reason: outcome.reason ?? '',
+              })
             if (outcome.outcome === 'landed') {
               const subject = entry.subject ?? {}
               const commits = (outcome.commits ?? []).map((commit) => {
@@ -528,7 +557,7 @@ export function createLander(
           if (pushed.retry) return pushed.retry
           const needsRestart =
             (await realpath(source)) === (await realpath(host.ultimateRoot)) &&
-            landed.paths.some((path) => /^(server|shared)\//.test(path))
+            restartNeeded(landed.paths)
           return finish(
             [summary(landed, sha), pushed.text, ...(needsRestart ? ['Needs restart.'] : [])].join(
               '\n',
@@ -608,7 +637,8 @@ export function createLander(
               if (
                 await merge(
                   entry.tip,
-                  `Merge ${entry.tip.slice(0, 7)} from #${entry.conversationId} into ${target}`,
+                  // The trailer labels the landing in first-parent catch-up rows (lineage/catchup.ts).
+                  `Merge ${entry.tip.slice(0, 7)} from #${entry.conversationId} into ${target}\n\nUltimate-Conversation: ${entry.conversationId}`,
                   `it conflicts with ${target} in`,
                   `Merge ${target} into your workspace, resolve, verify and submit again.`,
                 )
@@ -644,18 +674,17 @@ export function createLander(
                 const key = `check:${id}:${attempt}:${Array.isArray(group) ? `${position}.${member}` : position}`
                 let first = await runtime.memo<'passed' | 'failed'>(key, context)
                 if (!first) {
-                  await step(`checking: ${command}`)
+                  await step(`checking: ${command}`, { runs: command })
                   const began = performance.now()
                   const ran = await run(command, member)
                   const result = ran.failure === undefined ? 'passed' : 'failed'
                   // Logged before the memo: a crash in between reruns the check and logs it again, as it ran.
                   // A failure keeps its output tail, so a check that passes on its rerun can still be diagnosed.
-                  await step(
-                    `checked: ${command}`,
-                    { command, result, ...(ran.summary ? { summary: ran.summary } : {}) },
-                    ran.failure,
-                    { ms: performance.now() - began, timedOut: ran.timedOut },
-                  )
+                  await step(`checked: ${command}`, {
+                    result: { command, result, ...(ran.summary ? { summary: ran.summary } : {}) },
+                    output: ran.failure,
+                    ran: { ms: performance.now() - began, timedOut: ran.timedOut },
+                  })
                   first = await runtime.memo(key, result, context)
                 }
                 if (first === 'passed') return {}
@@ -663,21 +692,19 @@ export function createLander(
                 // neither grants a third run nor loses the failure.
                 let rerun = await runtime.memo<{ failure?: string }>(`${key}:rerun`, context)
                 if (!rerun) {
-                  await step(`rerunning: ${command}`)
+                  await step(`rerunning: ${command}`, { runs: command })
                   const began = performance.now()
                   const ran = await run(command, member)
                   const timing = { ms: performance.now() - began, timedOut: ran.timedOut }
                   if (ran.failure === undefined)
-                    await step(
-                      `checked: ${command}`,
-                      {
+                    await step(`checked: ${command}`, {
+                      result: {
                         command,
                         result: 'flaky',
                         ...(ran.summary ? { summary: ran.summary } : {}),
                       },
-                      undefined,
-                      timing,
-                    )
+                      ran: timing,
+                    })
                   else
                     await runtime.commit(async (tx) => {
                       await host.emit(tx, CheckRan, {
@@ -765,6 +792,7 @@ export function createLander(
             commits: lines(await git(source, 'log', '--oneline', `${base}..${integrated}`)),
             paths: lines(await git(source, 'diff', '--name-only', base, integrated)),
             flaky,
+            weight: await weightDelta(source, base, integrated),
           }
           let landed = candidate
           await runtime.commit(async (tx) => {

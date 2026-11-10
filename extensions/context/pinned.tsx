@@ -43,30 +43,25 @@ function useStartInView() {
  */
 export function PinnedPrompt() {
   const id = useConversation((conversation) => conversation.id)
-  // The acknowledged prompt is kept per conversation: read it only once the conversation is known.
-  return id === undefined ? null : <Pinned id={id} key={id} />
+  const owned = useConversationSummary(id)?.parentConversationId
+  // Nothing while a conversation loads: its id is unknown, and the action would answer for whichever one is requested.
+  // Keyed, so a conversation never starts from another's baseline or answer.
+  return id === undefined || owned !== undefined ? null : <Pinned id={id} key={id} />
 }
 
 function Pinned({ id }: { id: number }) {
   const agent = useConversation((conversation) => conversation.agent)
-  const owned = useConversationSummary(id)?.parentConversationId
   const entries = useTranscript()
   const startInView = useStartInView()
   // A new `pi.system` entry in the stream means the prompt changed: ask for it again.
   const latest = entries.findLast((entry) => entry.kind === 'pi.system')?.id
   const [seen, setSeen] = useUiState<number | null>(`context.seen.${id}`, null)
-  const enabled = owned === undefined
   const shown = useAction(
     CurrentPromptAction,
     seen === null ? {} : { since: seen },
     // Without a prompt there is nothing to pin; a failure leaves the pin out rather than raising a notice.
-    { enabled, onError: () => {} },
+    { onError: () => {}, on: latest },
   )
-  const { refetch } = shown
-  useEffect(() => {
-    // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
-    if (enabled) void refetch()
-  }, [latest, enabled, refetch])
   const current = shown.data
   useEffect(() => {
     if (seen === null && current?.at !== undefined) setSeen(current.at)
@@ -119,7 +114,7 @@ function Pinned({ id }: { id: number }) {
         className={changed ? 'border-brand/50 bg-card shadow-sm' : 'bg-card shadow-sm'}
         notice={
           changed && (
-            <span className="text-brand" data-pinned-notice>
+            <span className="min-w-0 truncate text-brand" data-pinned-notice>
               {[
                 changed.sections.length > 0 && plural(changed.sections.length, 'section'),
                 changed.tools.length > 0 && plural(changed.tools.length, 'tool'),

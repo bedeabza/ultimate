@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { onCommit } from '../../lib/commits.ts'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationId, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
@@ -110,7 +111,11 @@ export function triggers(
     if (/^#[1-9]\d*$/.test(of)) return Number(of.slice(1)) as ConversationId
     return undefined
   }
-  /** Evaluate `a`'s condition on `usage`, the measurement a commit published, else the conversation's current one. */
+  /**
+   * Evaluate `a`'s condition on `usage`, the measurement a commit published, else the conversation's current one. A
+   * crossing fires once and disarms until the value drops below `above - 10`, so a threshold of 10% or less never
+   * re-arms. Creation, resume and open evaluate the current measurement, catching a crossing missed meanwhile.
+   */
   async function evaluate(tx: Tx, a: Automation, id?: number, measured?: ContextUsage) {
     if (!a.enabled || !a.condition || !id) return
     const usage = measured ?? (await tx.doc(ContextUsageDoc, id as ConversationId))
@@ -249,14 +254,14 @@ export function triggers(
     closed = false
     stop?.()
     // Not a reactor: context usage is a document, not a domain event.
-    stop = host.harness().subscribeCommits((publication) => {
+    stop = onCommit(host.harness(), (publication) => {
       const changed = new Map<number, ContextUsage>()
       for (const change of publication.changes)
         if (
           change.type === 'document' &&
+          change.kind === 'change' &&
           change.record.kind === ContextUsageDoc.definition.kind &&
-          change.conversationId !== undefined &&
-          change.value
+          change.conversationId !== undefined
         )
           changed.set(change.conversationId, structuredClone(change.value as ContextUsage))
       if (changed.size)

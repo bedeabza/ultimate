@@ -14,6 +14,7 @@ import {
   surfaceItems,
   toolRenderers,
   linkRenderers,
+  inlineCodeRenderers,
   codeBlockLanguages,
   codeBlockRenderers,
   messageItems,
@@ -251,6 +252,7 @@ describe('web extension registry', () => {
         module({
           tools: { bash: First },
           link: First,
+          inlineCode: First,
           codeBlocks: { mermaid: First },
           entries: { 'pi.user': First },
           panels: [{ id: 'info', title: 'Info', component: First, order: 2 }],
@@ -263,6 +265,7 @@ describe('web extension registry', () => {
         module({
           tools: { bash: Second },
           link: Second,
+          inlineCode: Second,
           codeBlocks: { mermaid: Second, dot: Second },
           entries: { 'pi.compaction': Second, 'pi.user': Second },
           panels: [{ id: 'tasks', title: 'Tasks', component: Second, order: 1 }],
@@ -277,6 +280,10 @@ describe('web extension registry', () => {
     expect(toolRenderers(records, 'read')).toEqual([])
     // Link renderers compose like tool renderers, each wrapping the one before it.
     expect(linkRenderers(records)).toEqual([
+      { extension: 'a', version: 1, component: First },
+      { extension: 'b', version: 1, component: Second },
+    ])
+    expect(inlineCodeRenderers(records)).toEqual([
       { extension: 'a', version: 1, component: First },
       { extension: 'b', version: 1, component: Second },
     ])
@@ -629,16 +636,5 @@ describe('web extension registry', () => {
     // Only tabless panels: none shows until one is opened.
     expect(ids(shownPanels([panels[0]], null))).toEqual([undefined, []])
     expect(ids(shownPanels([panels[0]], 'secrets'))).toEqual(['secrets', ['secrets']])
-  })
-
-  it('rejects a panel whose tab is not a boolean', async () => {
-    const registry = createRegistry()
-    await registry.setLoaders({
-      [path('odd')]: async () =>
-        module({
-          panels: [{ id: 'x', title: 'X', component: component('x'), tab: 'no' as never }],
-        }),
-    })
-    expect(registry.getSnapshot()[0].error).toMatch(/^panels must be .*tab\?/)
   })
 })

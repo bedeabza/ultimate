@@ -10,6 +10,7 @@ import {
   useConversation,
   useDocOf,
   useEvent,
+  useReady,
   useUltimate,
 } from '@/sdk'
 import {
@@ -23,6 +24,7 @@ import {
 import {
   answeredMessages,
   emptyMessages,
+  openQuestion,
   scriptMessaged,
   threadRow,
   ultimateCompact,
@@ -53,39 +55,67 @@ function MessageAnswerLabel({ entry }: { entry: EntryRecord }) {
 /**
  * Stay mounted across surfaces so an Open click can reveal after Agent mounts and loads. `messages:open` names the entry,
  * or the tool call that sent a message (`call`): the response that made it, found in the loaded entries or else in the
- * stored history, which the transcript then pages in. A message's answer card sits beneath its text, which can be long:
- * once the transcript has shown the response, the card is brought into view.
+ * stored history, which the transcript then pages in. It may name a question to the user instead (`message`, its id in
+ * the log), as a link `?conversation=<c>&message=<m>` does once on load.
  */
 function MessageNavigation() {
   const { id, entries, loading } = useConversation()
-  const { surface } = useUltimate()
-  const [target, setTarget] = useState<{ conversation: number; entry?: number; call?: string }>()
+  const { surface, showSurface } = useUltimate()
+  // A cold load mounts the overlays first: the transcript that reveals comes with the page.
+  const { ready } = useReady()
+  const log = useDocOf(1, MessagesDoc)
+  const [target, setTarget] = useState<{
+    conversation: number
+    entry?: number
+    call?: string
+    message?: number
+  }>()
   useEvent('messages:open', (value) => setTarget(value as NonNullable<typeof target>))
+  // `?conversation=` stays the shell's; `?message=` leaves the address, so a reload does not jump again.
   useEffect(() => {
-    if (!target || surface !== 'agent' || id !== target.conversation || loading) return undefined
-    const { call } = target
-    const reveal = (entry: number) => {
-      events.emit('ultimate:reveal-entry', { conversationId: id, entryId: entry })
-      if (!call) return
-      // The transcript may first page in or unfold the row; give it a few seconds to mount the card. Not cancelled with
-      // the effect: a live entry re-runs it long before then, and the search ends by itself.
-      let tries = 30
-      const card = () => {
-        const element = document.querySelector(
-          `[data-entry-id="${entry}"] [data-message-outgoing] [data-questions-card]`,
-        )
-        if (element) element.scrollIntoView({ block: 'center' })
-        else if (--tries > 0) setTimeout(card, 100)
-      }
-      setTimeout(card, 100)
-    }
-    const loaded = target.entry ?? (call && callerOf(entries, call.split('/')[0])?.id)
-    setTarget(undefined)
-    // Not cancelled with the effect: clearing the target re-runs it before the frame, which would lose the reveal.
-    if (loaded) {
-      requestAnimationFrame(() => reveal(loaded))
+    const url = new URL(location.href)
+    const message = Number(url.searchParams.get('message'))
+    const conversation = Number(url.searchParams.get('conversation'))
+    if (!url.searchParams.has('message')) return
+    url.searchParams.delete('message')
+    history.replaceState(history.state, '', url)
+    if (Number.isSafeInteger(message) && Number.isSafeInteger(conversation) && conversation > 0)
+      setTarget({ conversation, message })
+  }, [])
+  // Only a question still waiting on the user, asked in that conversation: otherwise the conversation just opens.
+  useEffect(() => {
+    if (target?.message === undefined || !log) return
+    const asked = log.messages.find((m) => m.id === target.message)
+    if (asked?.call && asked.from === target.conversation && openQuestion(asked)) {
+      showSurface('agent')
+      setTarget({ conversation: target.conversation, call: asked.call })
+    } else setTarget(undefined)
+  }, [target, log, showSurface])
+  useEffect(() => {
+    if (
+      !target ||
+      target.message !== undefined ||
+      !ready ||
+      surface !== 'agent' ||
+      id !== target.conversation ||
+      loading
+    )
       return undefined
+    const { call } = target
+    // The call that sent the message, where its card shows: the response's top may be text before it.
+    const toolCallId = call?.split('/')[0]
+    const reveal = (entry: number) =>
+      events.emit('ultimate:reveal-entry', { conversationId: id, entryId: entry, toolCallId })
+    const loaded = target.entry ?? (toolCallId && callerOf(entries, toolCallId)?.id)
+    if (loaded) {
+      // Cleared in the frame: clearing it first re-runs this effect, whose cleanup cancelled the frame before it revealed.
+      const frame = requestAnimationFrame(() => {
+        setTarget(undefined)
+        reveal(loaded)
+      })
+      return () => cancelAnimationFrame(frame)
     }
+    setTarget(undefined)
     if (call)
       api.action(CallerAction, { conversation: id, call }).then(
         ({ entry }) => entry !== undefined && reveal(entry),
@@ -93,7 +123,7 @@ function MessageNavigation() {
         () => undefined,
       )
     return undefined
-  }, [surface, id, entries, loading, target])
+  }, [surface, id, entries, loading, target, ready])
   return null
 }
 

@@ -1,6 +1,8 @@
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
+import { onCommit } from '../../lib/commits.ts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
-import { Type } from '@earendil-works/pi-ai'
+import { obj, opt, str } from '@earendil-works/pi-schema'
+import { strEnum } from '../../lib/schema.ts'
 import {
   configure,
   defineExtension,
@@ -172,7 +174,7 @@ export default function workspaceExtension(host: ExtensionHost) {
       })
     unsubscribe?.()
     // Not a reactor: a lander task's fault is a Pi task record, not a domain event.
-    unsubscribe = host.harness().subscribeCommits((publication) => {
+    unsubscribe = onCommit(host.harness(), (publication) => {
       for (const change of publication.changes) {
         if (
           change.type !== 'task' ||
@@ -207,9 +209,11 @@ export default function workspaceExtension(host: ExtensionHost) {
     tasks: [service.Preparation, service.Lander],
     hooks: [
       hook(ToolTask, {
-        beforeTool: async (_call, api, caller) => {
+        beforeTool: async (call, api, caller) => {
+          // `message` never touches the checkout, and it is how a conversation reports that its workspace is gone.
+          if (call.name === 'message') return undefined
           const reason = await service.unavailable(api.conversationId, caller)
-          return reason ? { block: reason } : undefined
+          return reason ? { block: `${reason}. \`message\` still works, to report it.` } : undefined
         },
       }),
       // The lander conversation is its log: no model runs there.
@@ -227,16 +231,16 @@ export default function workspaceExtension(host: ExtensionHost) {
         name: 'workspace',
         description:
           'Inspect your workspace and source tips, or submit your clean, verified tip to the lander (submit requires divergence from the original request; afterLanding makes the landing wake you for a step that must follow it, instead of concluding you).',
-        parameters: Type.Object({
-          action: Type.Union([Type.Literal('status'), Type.Literal('submit')]),
-          divergence: Type.Optional(
-            Type.String({
+        parameters: obj({
+          action: strEnum(['status', 'submit']),
+          divergence: opt(
+            str({
               description:
                 "Required for submit. How the delivered result differs from what was originally asked: new agreements, a different approach or library, changed scope. Say 'None' when it matches.",
             }),
           ),
-          afterLanding: Type.Optional(
-            Type.String({
+          afterLanding: opt(
+            str({
               description:
                 'Optional, for submit: what you do once it has landed. The landing wakes you with its card and this text instead of concluding you; you are concluded when that turn stops.',
             }),

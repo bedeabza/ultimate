@@ -1,6 +1,6 @@
 /**
  * The extension SDK: everything a `web.tsx` needs besides components (`@/components/ui/*`, `@/components/ai/*`).
- * The guide is extensions/README.md.
+ * The guide is extensions/README.md; the hooks are in docs/extensions/sdk.md.
  */
 export {
   attention,
@@ -8,6 +8,7 @@ export {
   defineWebExtension,
   definePoint,
   ErrorReport,
+  FileUpload,
   MessageReference,
   ParkedRuns,
   provide,
@@ -29,6 +30,7 @@ export type {
   DocumentProps,
   EntryRenderer,
   InboxRenderer,
+  InlineCodeRenderer,
   LinkRenderer,
   PanelContribution,
   Point,
@@ -42,7 +44,7 @@ export type {
   UltimateContext,
   WebExtension,
 } from './types.ts'
-/** Building blocks of surfaces; see "Surfaces" in extensions/README.md. */
+/** Building blocks of surfaces; see docs/extensions/surfaces.md. */
 export {
   Conversation,
   Dock,
@@ -73,7 +75,7 @@ export { ConversationScope } from './conversation-scope.tsx'
 /** Sends what the composer inside it submits somewhere else, such as a new side chat; see `composer` renderers. */
 export { Composer, ComposerRedirect, fillComposer, insertIntoComposer } from '../app/composer.tsx'
 export type { ComposerTarget } from '../app/composer.tsx'
-export { api } from './client.ts'
+export { api, bundle, switched } from './client.ts'
 export { ActionError } from './api.ts'
 export type { ActionOptions, Api } from './api.ts'
 export type { UseActionOptions } from './hooks.ts'
@@ -157,7 +159,7 @@ export type {
   ToolSlot,
   UsageState,
 } from '@earendil-works/pi-durable'
-export type { JsonValue } from '@earendil-works/chord'
+export type { JsonValue } from '@earendil-works/chord/json'
 export type {
   AssistantMessage,
   AuthEvent,

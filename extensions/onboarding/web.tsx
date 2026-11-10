@@ -1,5 +1,5 @@
 import { BlocksIcon, CheckIcon, FolderCogIcon, GitBranchIcon } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   api,
   attention,
@@ -34,18 +34,14 @@ import {
 
 function useIsolation() {
   const workspaces = useExtensions().some((extension) => extension.name === 'workspaces')
-  const isolation = useAction(IsolationAction, null, { enabled: workspaces })
+  // A run may have set up Git: read again when one ends.
   const busy = useConversation((conversation) => conversation.busy)
-  const { refetch } = isolation
-  const wasBusy = useRef(busy)
-  useEffect(() => {
-    // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
-    if (wasBusy.current && !busy && workspaces) void refetch()
-    wasBusy.current = busy
-  }, [busy, refetch, workspaces])
+  const [runs, setRuns] = useState({ busy, ended: 0 })
+  if (busy !== runs.busy) setRuns({ busy, ended: runs.ended + (busy ? 0 : 1) })
+  const isolation = useAction(IsolationAction, null, { enabled: workspaces, on: runs.ended })
   useEvent('onboarding:git', () => {
     // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
-    if (workspaces) void refetch()
+    if (workspaces) void isolation.refetch()
   })
   return workspaces ? isolation.data : undefined
 }

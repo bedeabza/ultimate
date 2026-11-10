@@ -1,6 +1,6 @@
 import { realpath } from 'node:fs/promises'
 import { awaitWithContext } from '@earendil-works/chord/context'
-import { Type } from '@earendil-works/pi-ai'
+import { obj } from '@earendil-works/pi-schema'
 import type { ToolExecutionResult } from '@earendil-works/pi-durable'
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
@@ -21,8 +21,8 @@ export default function self(host: ExtensionHost) {
             ? ['The host project is Ultimate itself.']
             : []),
           `When someone is new to Ultimate or asks how it works, guide them from ${sourceRoot}/README.md (what it is, how to start, what to try) and the "How work is organised" section of ${sourceRoot}/AGENTS.md (roots, branches, notes, landing): explain briefly, in their terms, and point at the UI they will use (@ultimate's row at the top of the sidebar, or the top-bar @ultimate button on phones, and its conversation, Ctrl+K or ⌘K commands, the right panel).`,
-          `Before changing Ultimate, read ${sourceRoot}/AGENTS.md (layers, reloads, durability) and ${sourceRoot}/extensions/README.md (new UI is a new extension folder).`,
-          'UI and extension changes in the running host reload live. Call restart only after editing server/ or shared/, never for web/, extensions/, or agents/.',
+          `Before changing Ultimate, read ${sourceRoot}/AGENTS.md (layers, reloads, durability) and ${sourceRoot}/extensions/README.md (new UI is a new extension folder; it indexes the topic files in docs/extensions/).`,
+          'UI and extension changes in the running host reload live. Call restart only after a landing that changed server/, shared/, patches/ or pnpm-lock.yaml, never for web/, extensions/, or agents/.',
           ...(own
             ? [
                 `Land your workspace into ${own.source} first; restart requires the running clone to be clean at that landed commit.`,
@@ -35,8 +35,8 @@ export default function self(host: ExtensionHost) {
       defineTool({
         name: 'restart',
         description:
-          'Restart the shared Ultimate host after authorized changes to server/ or shared/. Land an isolated workspace into the running clone first.',
-        parameters: Type.Object({}),
+          'Restart the shared Ultimate host after authorized changes to server/, shared/ or its packages (patches/, pnpm-lock.yaml). Land an isolated workspace into the running clone first.',
+        parameters: obj({}),
         // The target generation is memoized before the swap, so replay reports it without restarting again.
         replay: 'safe',
         async execute(_args, api, context): Promise<ToolExecutionResult> {

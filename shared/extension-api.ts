@@ -55,6 +55,14 @@ export const actionRef = <Args, Result>(
 export const coreTier = /^export const tier = 'core'$/m
 
 /**
+ * An extension's tests live in its `test/` folder, which is not part of the extension: the build id, the reload
+ * watchers, the stylesheet's class scan, the import rules and the dependency graph all leave it out.
+ */
+export const extensionTests = 'test'
+/** Whether `path`, relative to an `extensions/` folder (`<name>/…`), is an extension's test folder or lies in it. */
+export const inExtensionTests = (path: string) => path.split('/')[1] === extensionTests
+
+/**
  * Built-ins that ship installed but off: each needs something of its own (a key, a service, a Worker) or changes how
  * the machine behaves. `extensions.enable` in user or project settings turns one on.
  */
@@ -68,6 +76,8 @@ export const defaultOff: readonly string[] = [
   'sounds',
   'voice-live',
   'mcp',
+  'push',
+  'wire',
 ]
 
 /** Who provides and who consumes each API, as `host.catalogue()` reports it. */

@@ -8,7 +8,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import type { ToolCall } from '@earendil-works/pi-ai'
 import type {
   AgentState,
@@ -20,14 +20,15 @@ import type {
 } from '@earendil-works/pi-durable'
 import { actions, allCommands, ownDefault, regionKeys, shellKeys, shownSurface } from './actions.ts'
 import type { Region } from './actions.ts'
-import { actionMessage, ROOT } from './api.ts'
+import { ROOT } from './api.ts'
 import { EVENT_FEED } from '../../../shared/events.ts'
 import type { StreamedView } from '../../../shared/protocol.ts'
 import type { EventData, EventRecord, EventToken } from '../../../shared/events.ts'
-import type { ActionArgs, ActionError, ActionOptions } from './api.ts'
-import { actionRef, docRef } from '../../../shared/extension-api.ts'
+import type { ActionArgs, ActionError } from './api.ts'
+import { docRef } from '../../../shared/extension-api.ts'
 import type { ActionRef, DocRef } from '../../../shared/extension-api.ts'
-import { api, registry, store, uiState } from './client.ts'
+import { api, reads, registry, store, uiState } from './client.ts'
+import type { Reader } from './reads.ts'
 import {
   HOME,
   compactDocs,
@@ -64,11 +65,11 @@ export interface ConversationState {
   /** True until this conversation's snapshot arrived. */
   loading: boolean
   /**
-   * The streamed active entries, oldest first: the head marker and the newest entries of a long context, all of a short
-   * one. Whole-transcript readers use `useTranscript()`, which grows as the reader pages in earlier history.
+   * The streamed entries, oldest first: the newest of a long transcript, all of a short one, head markers in place.
+   * Whole-transcript readers use `useTranscript()`, which grows as the reader pages in earlier history.
    */
   entries: readonly EntryRecord[]
-  /** The exclusive `api.history` cursor for active entries the stream left out; absent when it sent them all. */
+  /** The exclusive `api.history` cursor for entries the stream left out; absent when it sent them all. */
   older?: number
   /** `pi.agent`: model, thinking level, cwd, extensions, tools. */
   agent: AgentState
@@ -103,7 +104,7 @@ function derive(view: StreamedView | undefined): ConversationState {
       id: view.conversation.id,
       loading: false,
       entries: view.entries,
-      older: view.older,
+      older: view.before === undefined ? undefined : view.before + 1,
       agent: docs['pi.agent'] ?? {},
       usage: (docs['pi.usage'] ?? empty.usage) as UsageState,
       live,
@@ -461,77 +462,54 @@ export interface ActionState<T> {
 }
 
 /** Options of `useAction`. */
-export type UseActionOptions = { enabled?: boolean; onError?: (error: ActionError) => void }
+export type UseActionOptions = {
+  enabled?: boolean
+  onError?: (error: ActionError) => void
+  /** Call again whenever this value changes (compared as JSON), such as a document, an event id or a busy flag. */
+  on?: unknown
+  /** Call again this many ms after the last answer, while enabled. */
+  every?: number
+  /** Call again when the window regains focus. */
+  focus?: boolean
+}
 
 /**
- * Call the server action `ref` names and keep its result: on mount and whenever the action or `args` (compared as
- * JSON) change, unless `enabled` is false. A newer call, new args, or an unmount abort the call in flight, also one
- * `refetch` started; its late result is ignored. Calls act on the nearest conversation scope, or the shown
- * conversation outside one. A failure shows as a notice unless you pass `onError`.
+ * Call the server action `ref` names and keep its result: on mount, whenever the action or `args` (compared as JSON)
+ * change, when `on` changes, every `every` ms, on focus with `focus`, and after the server restarts; never while
+ * `enabled` is false. Components reading the same action and args share one call and one result, so a remount shows
+ * the last answer at once while it asks again. A newer call aborts the older one. Calls act on the nearest conversation scope, or the shown conversation outside one. A failure
+ * shows as a notice unless a reader passes `onError`.
  */
 export function useAction<Args, T>(
   ref: ActionRef<Args, T>,
   ...[args, options = {}]: ActionArgs<Args, UseActionOptions>
 ): ActionState<T> {
-  const { extension, name } = ref
-  const conversationId = useContext(ConversationIdContext)
-  const key = JSON.stringify([extension, name, args ?? null, conversationId ?? null])
-  const [state, setState] = useState<{
-    key: string
-    data?: T
-    error?: ActionError
-    loading: boolean
-  }>({ key, loading: options.enabled !== false })
-  const latest = useRef({
-    args,
-    onError: options.onError,
-    controller: undefined as AbortController | undefined,
-  })
-  latest.current.args = args
-  latest.current.onError = options.onError
-  const call = useCallback(async () => {
-    latest.current.controller?.abort()
-    const controller = new AbortController()
-    latest.current.controller = controller
-    setState((previous) => ({ ...(previous.key === key ? previous : { key }), loading: true }))
-    try {
-      // Rebuilt from its strings, so a ref made during render does not refetch on every render.
-      const data = await api.action(
-        actionRef<Args, T>(extension, name),
-        ...([latest.current.args, { signal: controller.signal, conversationId }] as ActionArgs<
-          Args,
-          ActionOptions
-        >),
-      )
-      if (controller.signal.aborted) return undefined
-      setState({ key, data, loading: false })
-      return data
-    } catch (error) {
-      if (controller.signal.aborted) {
-        // Disabled or unmounted rather than replaced by a newer call: nothing is in flight anymore.
-        if (latest.current.controller === controller)
-          setState((previous) => ({ ...previous, loading: false }))
-        return undefined
-      }
-      const failure = error as ActionError
-      setState((previous) => ({ ...previous, key, error: failure, loading: false }))
-      const { onError } = latest.current
-      if (onError) onError(failure)
-      else store.notify({ level: 'error', message: actionMessage(failure) })
-      return undefined
-    }
-    // `key` stands for args too, which are read through `latest`.
-  }, [key, extension, name, conversationId])
+  // The conversation the call acts on, scoped or shown, keys the read: answers of another conversation never serve it.
+  const scoped = useContext(ConversationIdContext)
+  const shown = useStore((state) => state.view?.conversation.id ?? state.requested ?? ROOT)
+  const read = reads.get(ref.extension, ref.name, args, scoped ?? shown)
+  const state = useSyncExternalStore(read.subscribe, read.get)
   const enabled = options.enabled !== false
+  const reader = useRef<Reader>({}).current
+  reader.onError = options.onError
+  reader.focus = options.focus
+  reader.every = options.every
+  useEffect(() => (enabled ? read.use(reader) : undefined), [read, reader, enabled])
+  useEffect(() => read.repoll(), [read, options.every])
+  const on = JSON.stringify(options.on ?? null)
+  const seen = useRef(on)
   useEffect(() => {
-    // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
-    if (enabled) void call()
-    // Disabled too: a `refetch` in flight must not outlive the component or its args.
-    // oxlint-disable-next-line react/exhaustive-deps -- abort the call in flight at cleanup, possibly a later refetch
-    return () => latest.current.controller?.abort()
-  }, [call, enabled])
-  const current = state.key === key ? state : { key, loading: enabled }
-  return { data: current.data, error: current.error, loading: current.loading, refetch: call }
+    if (seen.current === on) return
+    seen.current = on
+    // oxlint-disable-next-line typescript/no-floating-promises -- a read reports failures and resolves undefined rather than rejecting.
+    if (enabled) void read.refetch()
+  }, [read, on, enabled])
+  return {
+    data: state.data as T | undefined,
+    error: state.error,
+    loading: state.loading || (enabled && !state.settled),
+    refetch: read.refetch as () => Promise<T | undefined>,
+  }
 }
 
 /** `copy(text)` puts text on the clipboard; `copied` is true for 1.2 s after, and a failure becomes an error notice. */

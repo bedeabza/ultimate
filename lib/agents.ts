@@ -10,7 +10,8 @@ import type { Source } from '../server/project.ts'
 import { writeTextAtomically } from './json-file.ts'
 import { isIconName, isMarkTint, markTints } from './marks.ts'
 import type { MarkTint } from './marks.ts'
-import { DEFAULT_FAMILY, definitionRuns, isFamilyName, refOf } from './families.ts'
+import { DEFAULT_FAMILY, definitionRuns, isFamilyName, refName, refOf } from './families.ts'
+import type { Families } from './families.ts'
 import { readFamilies } from './families-settings.ts'
 // oxlint-disable-next-line no-restricted-imports -- agent discovery follows the core project trust decision
 import { projectDecision, useProjectSetup } from '../server/project-setup.ts'
@@ -39,6 +40,8 @@ export interface AgentDefinition {
   fast?: boolean
   /** `false`: its conversations get no automatic summaries (intent, title, reply activity, spawn refresh, abstract). */
   summaries?: boolean
+  /** A standing agent's display name in the UI, such as `Atlas`; its `@name` stays its address. */
+  title?: string
   /** A standing agent's mark: a lucide icon name; an unknown one shows the default glyph. */
   icon?: string
   /** A standing agent's mark colour. */
@@ -121,6 +124,25 @@ export const familyDefault = async (host: Pick<DefaultHost, 'userHome' | 'projec
 /** `defaultModel` for a host's model runtime, its project's default family and Pi settings. */
 export const hostDefaultModel = async (host: DefaultHost) =>
   defaultModel(host.modelRuntime.getAvailableSnapshot(), host.settings, await familyDefault(host))
+
+/**
+ * `definition` run on family `name`'s model and thinking instead of its own. Throws naming the families when `name` is
+ * unknown or, outside a preview, its model has no login here: the caller chose it, so it never falls back.
+ */
+export function onFamily(
+  definition: AgentDefinition,
+  name: string,
+  families: Families,
+  available: readonly Listed[],
+): AgentDefinition {
+  const names = Object.keys(families.families).join(', ')
+  if (!Object.hasOwn(families.families, name))
+    throw new Error(`Unknown family: ${name}. Families: ${names}`)
+  const runs = definitionRuns({ family: name }, families)
+  if (runs.model && !previewModel() && !hasLogin(available, runs.model))
+    throw new Error(`No login for ${refName(runs.model)} (family ${name}). Families: ${names}`)
+  return { ...definition, runs }
+}
 
 /**
  * The agent change a definition makes over `parent`: the explicit model, else the definition's pin when it has a login
@@ -206,6 +228,7 @@ const fields = new Set([
   'resident',
   'fast',
   'summaries',
+  'title',
   'icon',
   'tint',
 ])
@@ -222,6 +245,7 @@ function parseSettings(frontmatter: Record<string, unknown>): Partial<
     | 'fast'
     | 'summaries'
     | 'denyTools'
+    | 'title'
     | 'icon'
     | 'tint'
   >
@@ -238,6 +262,7 @@ function parseSettings(frontmatter: Record<string, unknown>): Partial<
     fast,
     summaries,
     denyTools,
+    title,
     icon,
     tint,
   } = frontmatter
@@ -258,6 +283,8 @@ function parseSettings(frontmatter: Record<string, unknown>): Partial<
   if (fast !== undefined && typeof fast !== 'boolean') throw new Error('fast must be a boolean')
   if (summaries !== undefined && typeof summaries !== 'boolean')
     throw new Error('summaries must be a boolean')
+  if (title !== undefined && (typeof title !== 'string' || !title.trim()))
+    throw new Error('title must be a nonempty string')
   if (icon !== undefined && !isIconName(icon))
     throw new Error('icon must be a lucide icon name, like Gem or notebook-pen')
   if (tint !== undefined && !isMarkTint(tint))
@@ -272,6 +299,7 @@ function parseSettings(frontmatter: Record<string, unknown>): Partial<
     ...(fast !== undefined ? { fast } : {}),
     ...(summaries !== undefined ? { summaries } : {}),
     ...(denyTools !== undefined ? { denyTools } : {}),
+    ...(title !== undefined ? { title: title.trim() } : {}),
     ...(icon !== undefined ? { icon } : {}),
     ...(tint !== undefined ? { tint } : {}),
   }
@@ -475,6 +503,7 @@ export interface DefinitionFields {
   resident?: boolean
   fast?: boolean
   summaries?: boolean
+  title?: string
   icon?: string
   tint?: MarkTint
 }
@@ -511,6 +540,7 @@ export function serializeDefinition(
     ...(frontmatter.resident !== undefined ? [`resident: ${frontmatter.resident}`] : []),
     ...(frontmatter.fast ? ['fast: true'] : []),
     ...(frontmatter.summaries === false ? ['summaries: false'] : []),
+    ...(frontmatter.title ? [`title: ${scalar(frontmatter.title)}`] : []),
     ...(frontmatter.icon ? [`icon: ${scalar(frontmatter.icon)}`] : []),
     ...(frontmatter.tint ? [`tint: ${frontmatter.tint}`] : []),
   ]
@@ -604,6 +634,7 @@ export async function saveOverlay(
   if ((form.fast ?? false) !== (base.fast ?? false)) settings.push(`fast: ${form.fast ?? false}`)
   if ((form.summaries ?? true) !== (base.summaries ?? true))
     settings.push(`summaries: ${form.summaries ?? true}`)
+  if (form.title && form.title !== base.title) settings.push(`title: ${scalar(form.title)}`)
   if (form.icon && form.icon !== base.icon) settings.push(`icon: ${scalar(form.icon)}`)
   if (form.tint && form.tint !== base.tint) settings.push(`tint: ${form.tint}`)
 

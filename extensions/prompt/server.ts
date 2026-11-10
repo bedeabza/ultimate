@@ -211,7 +211,7 @@ export default function prompt(host: ExtensionHost) {
   return defineExtension({
     name: 'prompt',
     hooks: [
-      // Pi upstream: @earendil-works/pi-durable@1.4.0 — patched transactional beforeInput hook.
+      // Pi upstream: @earendil-works/pi-durable@1.5.1 — patched transactional beforeInput hook.
       // The build is a note on the input that starts a run, not a system-prompt section: every hot reload changed that
       // section, and a changed system prompt rewrites the whole prompt cache. A conversation's first run records it.
       hook(GenerationTask, {
@@ -297,7 +297,7 @@ export default function prompt(host: ExtensionHost) {
             ') and test new behaviour before relying on it. An "Instructions changed" or "Docs changed" line means those files changed: your system prompt already carries changed instructions; re-read changed docs before relying on them.',
         ].join('\n')
       }),
-      // Pi upstream: @earendil-works/pi-coding-agent@1.4.0 src/core/system-prompt.ts and src/core/tools/*.ts — copied tool guidance adapted from unexported prompt contributions. Drop when Pi exports buildSystemPromptSections and the per-tool system prompt contributions.
+      // Pi upstream: @earendil-works/pi-coding-agent@1.5.1 src/core/system-prompt.ts and src/core/tools/*.ts — copied tool guidance adapted from unexported prompt contributions. Drop when Pi exports buildSystemPromptSections and the per-tool system prompt contributions.
       section('tools', (input) => {
         const guidance: Record<string, string> = {
           read: '- read: inspect files, with offset/limit for large files.',
@@ -355,7 +355,8 @@ export default function prompt(host: ExtensionHost) {
       }),
       section('environment', (input) => {
         const cwd = input.env?.cwd ?? input.agent.cwd ?? host.projectRoot
-        return `Work checkout (effective cwd): ${cwd}\nHost project: ${host.projectRoot}\nRunning Ultimate host: ${host.ultimateRoot}\nUI: ${host.system().process.url} (shared host)\nDirect project edits to the effective cwd. Host-scoped config and extensions remain loaded from the host project and Ultimate clone; edits in a separate checkout do not hot-reload the running host.`
+        const os = process.platform === 'darwin' ? 'macOS' : process.platform
+        return `OS: ${os} ${process.arch}\nWork checkout (effective cwd): ${cwd}\nHost project: ${host.projectRoot}\nRunning Ultimate host: ${host.ultimateRoot}\nUI: ${host.system().process.url} (shared host)\nDirect project edits to the effective cwd. Host-scoped config and extensions remain loaded from the host project and Ultimate clone; edits in a separate checkout do not hot-reload the running host.`
       }),
       section('cwd', (input) => input.env?.cwd ?? input.agent.cwd ?? host.projectRoot),
     ],

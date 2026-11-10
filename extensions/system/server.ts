@@ -1,4 +1,4 @@
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { implementAction } from '../../lib/actions.ts'
@@ -343,16 +343,13 @@ function ownToolCall(
 
 /** Conversations with a live foreground task. */
 async function busy(host: ExtensionHost) {
-  const graph = await host.harness().taskGraph(BACKGROUND_CONTEXT)
-  try {
-    return new Set(
-      Object.values(graph.value.tasks)
-        .filter((task) => !task.background)
-        .map((task) => task.conversationId as number),
-    )
-  } finally {
-    graph.dispose()
-  }
+  const graph = await host.harness().watchTaskGraph(BACKGROUND_CONTEXT)
+  await graph.stop()
+  return new Set(
+    Object.values(graph.value.tasks)
+      .filter((task) => !task.background)
+      .map((task) => task.conversationId as number),
+  )
 }
 
 function time(value: unknown, name: string) {

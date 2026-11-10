@@ -24,29 +24,39 @@ export const id = (value: unknown): ConversationId => {
 
 export type HistoryRead = 'conversations' | 'entries' | 'search'
 
-/** Prompt bookkeeping repeats in every conversation and matches almost any text; search leaves it out. */
+export type SearchOptions = {
+  conversationId?: number
+  limit?: number
+  kinds?: string[]
+  full?: boolean
+}
+
+/** Prompt bookkeeping repeats in every conversation and matches almost any text; search leaves it out (#2002). */
 const UNSEARCHED = new Set(['pi.system', 'prompt.build'])
-const AROUND = 200
 
 /**
- * A search hit: the entry's ids and kind with the stored JSON around the first match, or undefined when it does not match.
- * Whole entries (tool results, transcripts) made a few hundred matches exhaust the sandbox's memory.
+ * Whether `entry` matches a search, and what the search returns for it: the whole entry with `full`, otherwise
+ * `{conversation, id, kind, at, excerpt}` with about 200 characters of its JSON around the match, so wide audits
+ * stay small enough to return and to send across projects.
  */
-export const hit = (entry: EntryRecord, text: string) => {
+export function searchHit(entry: EntryRecord, text: string, options: SearchOptions) {
   if (UNSEARCHED.has(entry.kind)) return undefined
+  if (options.kinds && !options.kinds.includes(entry.kind)) return undefined
   const json = JSON.stringify(entry)
   const at = json.indexOf(text)
   if (at < 0) return undefined
-  const start = Math.max(0, at - AROUND)
-  const end = Math.min(json.length, at + text.length + AROUND)
+  if (options.full) return entry
+  const start = Math.max(0, at - 80)
+  const end = Math.min(json.length, at + text.length + 120)
+  const time = entry.model?.[0]?.timestamp
   return {
+    conversation: entry.conversationId,
     id: entry.id,
-    conversationId: entry.conversationId,
     kind: entry.kind,
-    snippet: `${start > 0 ? '…' : ''}${json.slice(start, end)}${end < json.length ? '…' : ''}`,
+    ...(typeof time === 'number' && { at: new Date(time).toISOString() }),
+    excerpt: `${start > 0 ? '…' : ''}${json.slice(start, end)}${end < json.length ? '…' : ''}`,
   }
 }
-export type SearchHit = NonNullable<ReturnType<typeof hit>>
 
 /** Undefined means the live chapter; unknown names fail before any database is opened. */
 export async function closedChapter(home: string, active: string, options: unknown) {
@@ -69,7 +79,7 @@ export async function closedChapter(home: string, active: string, options: unkno
   return chapter === active ? undefined : chapterFiles(home, chapter).database
 }
 
-// Pi upstream: @earendil-works/pi-durable@1.4.0 src/storage/sqlite/migrations.ts — conversation/entry JSON records and document revisions; fork cutoffs follow src/storage/sqlite/storage.ts. Drop when Pi exposes read-only closed-store history.
+// Pi upstream: @earendil-works/pi-durable@1.5.1 src/storage/sqlite/migrations.ts — conversation/entry JSON records and document revisions; fork cutoffs follow src/storage/sqlite/storage.ts. Drop when Pi's SQLite storage opens over a read-only connection: 1.5.0's readOnly Harness still sets WAL mode, runs migrations and checkpoints the file on close.
 export function readChapter(database: string, op: HistoryRead, args: unknown[]) {
   const db = new DatabaseSync(database, { readOnly: true })
   try {
@@ -148,20 +158,18 @@ export function readChapter(database: string, op: HistoryRead, args: unknown[]) 
         }
       })
     }
+    const matches: unknown[] = []
     if (op === 'entries') {
-      const matches: EntryRecord[] = []
       const options = (args[1] ?? {}) as { kinds?: string[]; limit?: number; before?: number }
       const count = limit(options.limit)
       for (const entry of entries(args[0], options.before)) {
         if (!options.kinds || options.kinds.includes(entry.kind)) matches.push(entry)
         if (matches.length === count) break
       }
-      return matches
     } else {
-      const matches: SearchHit[] = []
       const text = args[0]
       if (typeof text !== 'string' || !text) throw new Error('search text must be nonempty')
-      const options = (args[1] ?? {}) as { conversationId?: number; limit?: number }
+      const options = (args[1] ?? {}) as SearchOptions
       const count = limit(options.limit)
       const records =
         options.conversationId === undefined
@@ -169,13 +177,13 @@ export function readChapter(database: string, op: HistoryRead, args: unknown[]) 
           : [{ id: id(options.conversationId) }]
       for (const record of records) {
         for (const entry of entries(record.id)) {
-          const found = hit(entry, text)
-          if (found) matches.push(found)
+          const hit = searchHit(entry, text, options)
+          if (hit) matches.push(hit)
           if (matches.length === count) return matches
         }
       }
-      return matches
     }
+    return matches
   } finally {
     db.close()
   }

@@ -46,17 +46,22 @@ command and its output.
 ## 4. Classify and report
 
 Under `CONTRIBUTING.md`: a clear-cut fix or improvement to the core merges; a feature stays open and unmerged as a
-reference, titled "Feature: …" with the `feature` label. Report the verdict, the evidence from steps 1 to 3, and
-what to say on the pull request.
+reference, titled "Feature: …" with the `feature` label. Report the verdict and the evidence from steps 1 to 3.
+
+The first decision card is the only one: it always carries, next to the verdict question, a **post/skip question
+for the comment** whose "post" option has the drafted comment, in full, as its `preview`. Never leave the comment
+for a later card. Store the draft on the PR's record with codemode `ultimate.action('pr-triage', 'set', {number,
+draft})`, so the post or close Daniel picks sends exactly that text.
 
 ## 5. Merge, if it merges
 
 After the go, keep the `--no-ff` merge from step 2 so the author's commits stay as they are (no squash, rebase or
 amend), and `workspace submit` it: the lander runs every check on the merged result and pushes. Fixes of your own go
-in separate commits after the merge.
+in separate commits after the merge; one that works around something names its origin (the PR number, the upstream
+issue) and intent in a comment at the code.
 
 ## GitHub actions are not yours
 
-Never comment, close, retitle, label or approve the pull request. Hand the wording to @ultimate, which does it with
-the user's OK. In that wording, write agent names in backticks (`` `@ultimate` ``) or without the @: on GitHub
+Never comment, close, retitle, label or approve the pull request. @ultimate does it when the user picked it on the
+decision card. In the comment draft, write agent names in backticks (`` `@ultimate` ``) or without the @: on GitHub
 `@name` notifies the real user of that name.

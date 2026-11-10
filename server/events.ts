@@ -3,10 +3,11 @@
 // event exists exactly when the state change it describes does. A reactor's cursor advances in the transaction its
 // handler writes in: its `tx` writes happen exactly once per event across crashes, reloads and failures; side effects
 // outside `tx` (files, processes, network) are at least once.
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { defineDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationId, EntryId, EntryRecord, Harness, Tx } from '@earendil-works/pi-durable'
+import { onCommit } from '../lib/commits.ts'
 import { EVENT_FEED, EVENT_FEED_SIZE, NoticeEvent } from '../shared/events.ts'
 import type { EventContext, EventData, EventRecord, EventToken } from '../shared/events.ts'
 import { Metadata } from './metadata.ts'
@@ -90,7 +91,7 @@ function currentContext(): EventContext | undefined {
 }
 
 const record = (entry: EntryRecord): EventRecord => {
-  const envelope = entry.data as Pick<EventRecord, 'v' | 'at' | 'data' | 'context'>
+  const envelope = entry.data as Pick<EventRecord, 'v' | 'at' | 'data' | 'context' | 'fails'>
   return structuredClone({
     id: entry.id,
     name: entry.kind.slice('event.'.length),
@@ -121,6 +122,7 @@ export async function emit<D extends JsonValue>(tx: Tx, event: EventToken<D>, da
       at: new Date().toISOString(),
       data,
       ...(stamp ? { context: stamp } : {}),
+      ...(event.fails ? { fails: event.fails } : {}),
     },
   })
   const emitted = record(entry) as EventRecord<D>
@@ -276,7 +278,7 @@ export function eventLog(
           await stop()
           state.active = active
           state.kinds = active.kinds
-          unsubscribe = harness().subscribeCommits((publication) => {
+          unsubscribe = onCommit(harness(), (publication) => {
             if (
               publication.changes.some(
                 (change) => change.type === 'entry' && active.kinds.has(change.value.kind),

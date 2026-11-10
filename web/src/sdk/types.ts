@@ -107,6 +107,12 @@ export type EntryRenderer = ComponentType<{
 export type LinkRenderer = ComponentType<{ href: string; children: ReactNode; core: ReactNode }>
 
 /**
+ * An inline code span in Markdown (messages, reports): its text as `code`, and `core`, the rendering so far, starting
+ * with the default `<code>`. Return `core` for spans you leave alone.
+ */
+export type InlineCodeRenderer = ComponentType<{ code: string; core: ReactNode }>
+
+/**
  * A fenced code block in Markdown, by its language: `code`, `language`, `incomplete` while the fence still streams, and
  * `core`, the rendering so far, starting with the highlighted block with its copy button.
  */
@@ -218,6 +224,8 @@ export interface CompactSummaryProps {
   rows: readonly CompactRow[]
   /** Steps in its runs of work. */
   steps: number
+  /** Every entry in it, those in its runs of work included. */
+  entries: readonly EntryRecord[]
   /** Whether the agent still works in it. */
   working: boolean
 }
@@ -275,6 +283,16 @@ export const ErrorReport = definePoint<
   { title: string; send: (report: string) => void } | undefined
 >('ultimate.errorReport')
 
+/**
+ * Where the composer puts a file that is not an inline image (`attachments` provides it): `upload` stores it on the
+ * host and resolves with its absolute path, which the prompt references; files up to `maxBytes` attach, and the host
+ * keeps them `keptMs`. Without a provider only images attach.
+ */
+export const FileUpload = definePoint<
+  null,
+  { upload: (file: File) => Promise<string>; maxBytes: number; keptMs: number } | undefined
+>('ultimate.fileUpload')
+
 /** What a facet provides for a point: `useValue` is a hook, run once per `<Provided>` with its input. */
 export interface Provision {
   point: string
@@ -301,6 +319,8 @@ export interface WebExtension {
   composer?: ComposerRenderer
   /** Renders links in Markdown; renderers compose in discovery order, each wrapping the one before it. */
   link?: LinkRenderer
+  /** Renders inline code spans in Markdown; renderers compose in discovery order, each wrapping the one before it. */
+  inlineCode?: InlineCodeRenderer
   /** Fenced code block renderers by language; they compose in discovery order, each wrapping the one before it. */
   codeBlocks?: Readonly<Record<string, CodeBlockRenderer>>
   /** Contributions to the hover action row on stored messages, in discovery order. */

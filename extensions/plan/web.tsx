@@ -36,7 +36,7 @@ import {
   useUltimate,
 } from '@/sdk'
 import type { ConversationSummary, ToolCallView } from '@/sdk'
-import { ConversationTask } from '../conversations/ui.tsx'
+import { ConversationEpic, ConversationTask } from '../conversations/ui.tsx'
 import { InfoAction, stateLabel, useWorkspaces } from '../workspaces/ui.tsx'
 import { criteriaOf, sectionsOf, verbatim } from './body.tsx'
 import { criteriaOfBody, finished, number, pillOf, progressLabel } from './progress.tsx'
@@ -138,21 +138,6 @@ function Note({ note, clamp }: { note: Task['notes'][number]; clamp?: boolean })
   )
 }
 
-/** Calls `refetch` when the window regains focus and when `key` changes after mount. */
-function useRefresh(refetch: () => unknown, key: string) {
-  const last = useRef(key)
-  useEffect(() => {
-    if (last.current === key) return
-    last.current = key
-    void refetch()
-  }, [key, refetch])
-  useEffect(() => {
-    const refresh = () => void refetch()
-    window.addEventListener('focus', refresh)
-    return () => window.removeEventListener('focus', refresh)
-  }, [refetch])
-}
-
 /**
  * The linked child's workspace: branch, state and commits ahead. Refetched when the child or its parent settles,
  * since either may have committed or landed.
@@ -161,12 +146,11 @@ function IsolateRow({ child, parent }: { child: ConversationSummary; parent: num
   const conversations = useConversations()
   const parentBusy = conversations.find((conversation) => conversation.id === parent)?.busy
   const recorded = useWorkspaces()[String(child.id)]
-  const { data: isolate, refetch } = useAction(
+  const { data: isolate } = useAction(
     InfoAction,
     { id: child.id },
-    { enabled: !!recorded },
+    { enabled: !!recorded, on: [child.busy, parentBusy], focus: true },
   )
-  useRefresh(() => recorded && refetch(), `${child.busy} ${parentBusy}`)
   if (!isolate) return null
   return (
     <div className="font-mono text-[11px] text-muted-foreground">
@@ -876,8 +860,26 @@ function useConversationTask(id: number | undefined) {
   return task && { chip: <TaskChip task={task} />, title: task.title }
 }
 
+/** The epic coordinator `id` works itself, for its sidebar row; one with a task linked to a subagent has none. */
+function useConversationEpic(id: number) {
+  const epics = useDocOf(id, PlanDoc)?.epics ?? {}
+  const openTask = useOpenTask()
+  const epic =
+    pillOf(epics)?.epic ?? Object.values(epics).toSorted((a, b) => number(b.key) - number(a.key))[0]
+  if (!epic || Object.values(epic.tasks).some((task) => task.child !== undefined)) return undefined
+  return {
+    key: epic.key,
+    title: epic.title,
+    status: epic.status,
+    open: () => openTask({ coordinator: id, key: epic.key }),
+  }
+}
+
 export default defineWebExtension({
   tools: { plan: PlanCall },
   slots: { overlay: PlanOverlay },
-  provides: [provide(ConversationTask, useConversationTask)],
+  provides: [
+    provide(ConversationTask, useConversationTask),
+    provide(ConversationEpic, useConversationEpic),
+  ],
 })

@@ -24,11 +24,12 @@ import { store } from '@/sdk/client'
 import { MessagesDoc, conversationState, emptyMessages } from '../messages/ui.tsx'
 import {
   AgentMark,
-  agentTitle,
+  ConversationEpic,
   ConversationPhase,
   ConversationTask,
   FeatureTag,
   RenameAction,
+  useAgentTitle,
 } from '../conversations/ui.tsx'
 import type { Presence } from '../conversations/ui.tsx'
 import { Review } from '../workspaces/ui.tsx'
@@ -48,7 +49,7 @@ const settled = {
   awaiting: {
     label: 'Awaiting @ultimate',
     word: 'Awaiting @ultimate',
-    tone: 'text-amber-700 dark:text-amber-300',
+    tone: 'text-brand',
   },
   done: { label: 'Done: its answer went to its parent', word: 'Done', tone: 'text-success' },
   failed: { label: 'Its latest run failed', word: 'Failed', tone: 'text-error' },
@@ -97,6 +98,7 @@ function Mark({
               ) : (
                 <span
                   className={cn('size-1.5 rounded-full bg-brand', working && 'animate-pulse-dot')}
+                  data-status={working ? 'working' : 'idle'}
                 />
               )}
             </span>
@@ -388,6 +390,7 @@ export function StandingRow({
   onOpen: () => void
   children: ReactNode
 }) {
+  const { title, brand } = useAgentTitle(name)
   return (
     <div
       className={cn(
@@ -408,7 +411,7 @@ export function StandingRow({
         <AgentMark name={name} presence={presence} />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-baseline gap-1.5">
-            {name === 'ultimate' ? (
+            {brand ? (
               // The title bar's wordmark: Ultimate's own name is the brand.
               <span
                 className="truncate font-sans text-[11.5px] leading-5 font-semibold tracking-[0.28em] text-brand"
@@ -418,7 +421,7 @@ export function StandingRow({
               </span>
             ) : (
               <span className="truncate text-[13px] leading-5 font-semibold text-foreground">
-                {agentTitle(name)}
+                {title}
               </span>
             )}
             <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">@{name}</span>
@@ -541,6 +544,58 @@ function TaskedSubagentLine({
         {working ? 'working' : (known?.word.toLowerCase() ?? 'idle')}
       </span>
     </button>
+  )
+}
+
+/**
+ * The epic a branch's coordinator works itself, as the first line under its In flight row, styled like a subagent's:
+ * its dot pulses while the coordinator runs, and a done epic reads done. Click opens the epic in the plan panel.
+ */
+export function EpicLine({ id, working }: { id: number; working: boolean }) {
+  return (
+    <Provided input={id} point={ConversationEpic}>
+      {(epic) => {
+        if (!epic) return null
+        const done = epic.status === 'done'
+        return (
+          <button
+            className="mx-2 flex h-6 w-[calc(100%-1rem)] min-w-0 cursor-pointer items-center gap-1.5 rounded-md pr-2 pl-5 text-left font-mono text-[10.5px] outline-none hover:bg-sidebar-accent/50 focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+            data-epic-line={id}
+            data-ui="sidebar-row"
+            onClick={epic.open}
+            title={`${epic.key} · ${epic.title}\nWorked directly by #${id}`}
+            type="button"
+          >
+            <span className="w-2 shrink-0 text-muted-foreground/40">└</span>
+            <span className="flex size-3 shrink-0 items-center justify-center">
+              {done ? (
+                <CircleCheckIcon className="size-3.5 text-success" />
+              ) : (
+                <span
+                  className={cn(
+                    'size-1.5 rounded-full',
+                    working ? 'animate-pulse-dot bg-brand' : 'bg-muted-foreground/40',
+                  )}
+                  data-status={working ? 'working' : 'idle'}
+                />
+              )}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-foreground/75">
+              {epic.key}
+              <span className="text-muted-foreground/60"> · {epic.title}</span>
+            </span>
+            <span
+              className={cn(
+                'shrink-0 text-[10px]',
+                done ? 'text-success' : working ? 'text-brand' : 'text-muted-foreground/70',
+              )}
+            >
+              {done ? 'done' : working ? 'working' : 'idle'}
+            </span>
+          </button>
+        )
+      }}
+    </Provided>
   )
 }
 

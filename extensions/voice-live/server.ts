@@ -10,10 +10,11 @@ import {
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
 import type { ConversationId, Cursor, ToolTaskInput, Tx } from '@earendil-works/pi-durable'
-import { Type } from '@earendil-works/pi-ai'
+import { obj, str } from '@earendil-works/pi-schema'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { readSecret } from '../../lib/secrets.ts'
+import { openQuestion } from '../../lib/message-state.ts'
 import { Messages, MessagesApi } from '../messages/api.ts'
 import type { Question } from '../messages/api.ts'
 import { Standing, SubagentsApi } from '../subagents/api.ts'
@@ -153,7 +154,8 @@ async function write(
   const settled = await (
     await conversation.submit({ type: 'write', requestId, entry: { kind, data } }, context)
   ).wait(context)
-  if (settled.status !== 'done') throw new Error(`Voice write failed: ${settled.reason}`)
+  if (settled.status !== 'done' || settled.type !== 'write')
+    throw new Error(`Voice write failed: ${settled.reason}`)
   return settled.entry
 }
 
@@ -234,14 +236,14 @@ export function answerTask(host: ExtensionHost) {
           userLine(input),
           `voice:line:${input.request}`,
         )
-        // The open question this utterance answers, chosen once: after our own answer it is no longer open.
+        // The open question this utterance answers, chosen once: after our own answer it is no longer open. Spoken
+        // words name no card, so with several open none is guessed: the utterance goes in as plain input, and the
+        // agent sees its open questions by number.
         let question = await runtime.memo<number | false>('question', ctx)
         if (question === undefined) {
           const log = await runtime.snapshot(Messages, ROOT_CONVERSATION_ID, ctx)
-          const open = log?.messages.findLast(
-            (m) => m.from === main && m.to === 'user' && m.reply && m.state === 'delivered',
-          )
-          question = await runtime.memo('question', open?.id ?? false, ctx)
+          const open = (log?.messages ?? []).filter((m) => m.from === main && openQuestion(m))
+          question = await runtime.memo('question', open.length === 1 ? open[0].id : false, ctx)
         }
         let receipt
         // A crash after answer() finds this utterance's own reply by its text, never another answer to the question.
@@ -277,8 +279,8 @@ export function answerTask(host: ExtensionHost) {
             else if (m && ['failed', 'stopped'].includes(m.state))
               placed.reject(new Error(m.error ?? 'Voice reply was not delivered'))
           }
-          watch.start(async (value) => {
-            inspect(value)
+          watch.start(async (call) => {
+            if (call.kind === 'value') inspect(call.value)
           })
           try {
             inspect(watch.value)
@@ -583,7 +585,7 @@ export default (host: ExtensionHost) => {
         deferred: true,
         description:
           'Speak text to the user through GPT-Live. Use for your answer, clarification or brief acknowledgement.',
-        parameters: Type.Object({ text: Type.String({ minLength: 1 }) }),
+        parameters: obj({ text: str({ minLength: 1 }) }),
         // The tool task's request id writes the spoken line once; correlation is memoized.
         replay: 'safe',
         async execute({ text }, api, ctx) {
@@ -640,7 +642,7 @@ export default (host: ExtensionHost) => {
         deferred: true,
         description:
           'Pass a clear, self-contained request in the user’s words to @ultimate. Its answer returns as input; do not wait here.',
-        parameters: Type.Object({ request: Type.String({ minLength: 1 }) }),
+        parameters: obj({ request: str({ minLength: 1 }) }),
         // A transactional receipt schedules once; the forwarded line has a stable write request id.
         replay: 'safe',
         async execute({ request }, api, ctx) {
@@ -692,7 +694,7 @@ export default (host: ExtensionHost) => {
         name: 'voice_note',
         deferred: true,
         description: 'Give GPT-Live quiet context, without speaking it.',
-        parameters: Type.Object({ text: Type.String({ minLength: 1 }) }),
+        parameters: obj({ text: str({ minLength: 1 }) }),
         // The tool task's stable request id writes the context note once.
         replay: 'safe',
         async execute({ text }, api) {

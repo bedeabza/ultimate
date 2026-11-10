@@ -39,7 +39,10 @@ export type Landed = {
   commits: string[]
   paths: string[]
   flaky: string[]
+  weight?: Weight
 }
+/** Lines and estimated tokens a landing added and removed over the files `lib/token-weight.ts` counts. */
+export type Weight = { added: number; removed: number; tokens: number }
 /** A check's result; a passed or flaky one carries its last output line as `summary`. */
 export type LanderCheck = {
   command: string
@@ -50,6 +53,8 @@ export type LanderCheck = {
 export type LanderStep = {
   step: string
   at: number
+  /** The check command this step starts running; its `check` result row ends it. */
+  runs?: string
   check?: LanderCheck
 }
 /** How a submission ended. A push that failed after landing locally is `landed` with a `reason`. */
@@ -62,6 +67,7 @@ export type LanderOutcome = {
   commits?: string[]
   paths?: string[]
   flaky?: string[]
+  weight?: Weight
   /** `<remote>/<target>` it was pushed to. */
   pushed?: string
   needsRestart?: boolean
@@ -81,6 +87,7 @@ export type LanderEntry = {
   /** Submitting conversation breadcrumb, not the log timestamp. */
   sourceEntry?: number
   step?: string
+  runs?: string
   check?: LanderCheck
   /** On the submission's first line and its outcome. */
   subject?: ConversationSubject

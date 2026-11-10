@@ -179,6 +179,9 @@ export function Dot({ look, className }: { look: Look; className?: string }) {
         busy && 'animate-pulse-dot',
         className,
       )}
+      data-status={
+        busy ? 'working' : look === 'failed' || look === 'paused' || look === 'done' ? look : 'idle'
+      }
       role="img"
     />
   )
@@ -238,7 +241,9 @@ export function stateLine(automation: Automation, now: number): string {
       ? condition.value === undefined
         ? 'context not seen yet'
         : `${Math.round(condition.value)}% now`
-      : `${automation.lastFireAt ? `fired ${clock(automation.lastFireAt, now)} · ` : ''}${condition.above > 10 ? `re-arms below ${condition.above - 10}%` : 're-arms after a compaction'}`
+      : condition.above <= 10
+        ? `won't re-arm${automation.lastFireAt ? ` · fired ${clock(automation.lastFireAt, now)}` : ''}`
+        : `${automation.lastFireAt ? `fired ${clock(automation.lastFireAt, now)} · ` : ''}re-arms below ${condition.above - 10}%`
   }
   if (automation.event && !attention(look) && look !== 'working')
     return automation.fires

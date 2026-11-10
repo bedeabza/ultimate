@@ -1,27 +1,31 @@
 /** The `branch` tool: start a lineage branch and send it its first message. */
-import { Type } from '@earendil-works/pi-ai'
+import { bool, num, obj, opt, str } from '@earendil-works/pi-schema'
 import { configure, defineTool, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { definitionAgent, discoverAgents, hostDefaultModel } from '../../lib/agents.ts'
+import { definitionAgent, discoverAgents, hostDefaultModel, onFamily } from '../../lib/agents.ts'
+import { readFamilies } from '../../lib/families-settings.ts'
 import { LineageApi, Roots } from '../lineage/api.ts'
 import { actingAs } from '../../lib/acting-as.ts'
 import { imagesParameter, resolveImages } from './images.ts'
 import { send } from './send.ts'
 import { Started } from './addresses.ts'
+import { Messages } from './api.ts'
+import { isOwed } from '../../lib/message-state.ts'
 
 export const branchTool = (host: ExtensionHost) =>
   defineTool({
     name: 'branch',
     deferred: true,
     description:
-      "Start a lineage branch. Its answer returns to you as a reply. Give it a title: one short line naming the work (at most 60 characters), shown in the sidebar and the tally until its summary renames it; without one, the prompt's first 80 characters name it.",
-    parameters: Type.Object({
-      prompt: Type.String({ minLength: 1 }),
-      title: Type.Optional(Type.String({ minLength: 1, maxLength: 60 })),
-      root: Type.Optional(Type.Number()),
-      isolated: Type.Optional(Type.Boolean()),
-      images: Type.Optional(imagesParameter),
+      "Start a lineage branch. Its answer returns to you as a reply. Give it a title: one short line naming the work (at most 60 characters), shown in the sidebar and the tally until its summary renames it; without one, the prompt's first 80 characters name it. family names a model family the coordinator runs on instead of its own.",
+    parameters: obj({
+      prompt: str({ minLength: 1 }),
+      title: opt(str({ minLength: 1, maxLength: 60 })),
+      root: opt(num()),
+      family: opt(str({ minLength: 1 })),
+      isolated: opt(bool()),
+      images: opt(imagesParameter),
     }),
     // Lineage atomically deduplicates the fork; Sent deduplicates its first message.
     replay: 'safe',
@@ -50,8 +54,17 @@ export const branchTool = (host: ExtensionHost) =>
           host.userHome,
           host.modelRuntime,
         )
-        const coordinator = definitions.find((definition) => definition.name === 'coordinator')
-        if (!coordinator) throw new Error('Missing coordinator definition')
+        const definition = definitions.find((candidate) => candidate.name === 'coordinator')
+        if (!definition) throw new Error('Missing coordinator definition')
+        const coordinator =
+          input.family === undefined
+            ? definition
+            : onFamily(
+                definition,
+                input.family,
+                await readFamilies(host.userHome, host.projectRoot),
+                host.modelRuntime.getAvailableSnapshot(),
+              )
         // The model and thinking level the definition pins when its provider has a login here, thinking clamped to
         // what the model supports; without one, the current default model, never the one the root last stored.
         const rootAgent = await (await host
@@ -84,7 +97,20 @@ export const branchTool = (host: ExtensionHost) =>
             ...(modelTools && 'add' in modelTools && modelTools.add?.length ? { modelTools } : {}),
           })
           ;(await tx.doc(host.metadata, branch.id)).label = 'coordinator'
-          ;(await tx.doc(Started, branch.id)).by = from
+          const started = await tx.doc(Started, branch.id)
+          started.by = from
+          // An agent's request the starter still owes an answer (send.ts's test for what is owed) is what the branch
+          // works on: its result reaches that agent once it is concluded (route.ts). Without the link, a result routed
+          // to a concluded branch reached no one (danielgriesser.com #13859/15161, @writer's briefing).
+          const owed = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.findLast(
+            (m) => m.to === from && m.from !== 'user' && isOwed(m),
+          )
+          if (owed && owed.from !== 'user')
+            started.serves = {
+              message: owed.id,
+              from: owed.from,
+              ...(owed.remote ? { remote: owed.remote } : {}),
+            }
         }, ctx)
         id = await api.memo('branch-id', branch.id, ctx)
       }

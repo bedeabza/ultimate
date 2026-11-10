@@ -4,6 +4,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { Branch } from '../lineage/api.ts'
 import { Messages } from '../messages/api.ts'
+import { isOpen } from '../../lib/message-state.ts'
 import { WorkspacesApi } from '../workspaces/api.ts'
 
 const Seen = defineDoc<{ key?: string }>({
@@ -38,7 +39,7 @@ export async function idleNote(
   const waiting = new Set<number>()
   const owed = new Set<number>()
   for (const message of messages) {
-    const open = message.reply && (message.state === 'sent' || message.state === 'delivered')
+    const open = isOpen(message)
     if (message.from === conversationId && typeof message.to === 'number') owed.delete(message.to)
     if (typeof message.from !== 'number') continue
     if (message.to === conversationId) {

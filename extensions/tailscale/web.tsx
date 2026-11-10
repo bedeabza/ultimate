@@ -7,7 +7,7 @@ import {
   ShieldCheckIcon,
   TriangleAlertIcon,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -49,21 +49,14 @@ const problems: Record<Problem, { title: string; link?: { href: string; label: s
 function useStatus() {
   const system = useSystem()
   // Failures show where the status does, not as notices: the status line reads it on every page.
-  const status = useAction(StatusAction, null, { onError: () => {} })
-  const signature = JSON.stringify([
-    system?.access.origins,
-    system?.extensionDiagnostics,
-    system?.extensions.find((extension) => extension.name === 'tailscale')?.server?.loadedAt,
-  ])
-  const seen = useRef(signature)
-  const { refetch } = status
-  useEffect(() => {
-    if (signature === seen.current) return
-    seen.current = signature
-    // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
-    void refetch()
-  }, [signature, refetch])
-  return status
+  return useAction(StatusAction, null, {
+    onError: () => {},
+    on: [
+      system?.access.origins,
+      system?.extensionDiagnostics,
+      system?.extensions.find((extension) => extension.name === 'tailscale')?.server?.loadedAt,
+    ],
+  })
 }
 
 /** A shell command to copy, as a code chip. */
@@ -107,7 +100,7 @@ function Heading({ children, meta }: { children: ReactNode; meta?: ReactNode }) 
 
 const dot = (tone: string) => <span className={cn('size-1.5 rounded-full', tone)} />
 
-function Ready({ url, allow }: { url: string; allow: string[] }) {
+function Ready({ url, allow, hint }: { url: string; allow: string[]; hint?: string }) {
   const { copied, copy } = useCopy()
   return (
     <>
@@ -146,7 +139,13 @@ function Ready({ url, allow }: { url: string; allow: string[] }) {
       <p className="mt-3 flex items-start gap-1.5 text-[12px] leading-snug text-muted-foreground">
         <ShieldCheckIcon className="mt-px size-3.5 shrink-0 text-success" />
         <span className="min-w-0 break-words">
-          Only <span className="text-foreground/90">{allow.join(', ')}</span> can open it
+          {allow.length ? (
+            <>
+              Only <span className="text-foreground/90">{allow.join(', ')}</span> can open it
+            </>
+          ) : (
+            hint
+          )}
         </span>
       </p>
       <p className="mt-1 pl-5 text-[12px] leading-snug text-muted-foreground/80">
@@ -266,7 +265,9 @@ function Details({ status }: { status: ReturnType<typeof useStatus> }) {
           {errorMessage(error)}
         </p>
       )}
-      {state === 'ready' && data?.url && <Ready allow={data.allow} url={data.url} />}
+      {state === 'ready' && data?.url && (
+        <Ready allow={data.allow} hint={data.hint} url={data.url} />
+      )}
       {state && state in problems && <Trouble hint={data?.hint} state={state as Problem} />}
       {/* Ready too: it serves the mapping again if something removed it behind this server's back. */}
       {(state === 'ready' || (state && state in problems)) && <CheckAgain onChecked={refetch} />}
@@ -347,7 +348,8 @@ function Indicator() {
 }
 
 export default defineWebExtension({
-  slots: { 'statusline.right': [Indicator] },
+  // Left of `live · gen N` and the build item, which stay together at the right end.
+  slots: { 'statusline.right': [{ component: Indicator, order: -0.5 }] },
   commands: [
     {
       id: 'tailscale.panel',

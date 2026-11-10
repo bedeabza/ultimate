@@ -9,7 +9,7 @@ import { extensionSettingsFiles } from './extension-settings.ts'
 import { watchRoots } from './watch-roots.ts'
 import { actionExec } from './actions.ts'
 import type { ExtensionAction } from './actions.ts'
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { join, resolve } from 'node:path'
 import type {
   ConversationDocToken,
@@ -26,10 +26,12 @@ import { AgentDoc, LiveDoc } from '@earendil-works/pi-durable'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import type { Access } from './request-security.ts'
 import { EventFeed, eventLog } from './events.ts'
+import { contractOutline } from '../lib/api-files.ts'
 import type { EventHost } from './events.ts'
 import { extensionApis } from './extension-apis.ts'
 import type { TraceReader } from './trace.ts'
 import type { Api, Catalogue } from '../shared/extension-api.ts'
+import { inExtensionTests } from '../shared/extension-api.ts'
 import type { Device } from '../shared/events.ts'
 
 export type ExtensionHost = Pick<
@@ -71,6 +73,12 @@ export type ExtensionHost = Pick<
   onClose(cleanup: () => Promise<void>): void
   /** Run `callback` each time an extension's server facet fails to load, with its name and error; facet-scoped. */
   onLoadError(callback: (name: string, error: string) => void): void
+  /**
+   * Run `callback` and wait for it before each extension reload, web build and restart, so none of them reads a
+   * checkout or packages that are still being written. When it throws, a reload or build goes on with a notice and a
+   * restart is refused with the message; facet-scoped.
+   */
+  onBeforeLoad(callback: () => Promise<void>): void
   harness(): Harness
   system(): SystemInfo
   /** Summaries of every conversation, as the web's conversation list shows them; empty until the harness is open. */
@@ -113,6 +121,8 @@ export async function loadExtensions(
   runtime: Pick<ExtensionHost, 'harness' | 'system' | 'conversations' | 'access'>,
   watch: Watch,
   notice: (message: string) => void = () => {},
+  /** Bring the web bundle up to date with the settings just applied. */
+  rebuildWeb: () => Promise<void> = async () => {},
 ) {
   const trace = host.callTrace
   const log = eventLog(runtime.harness, trace.run, trace.keep)
@@ -240,6 +250,10 @@ export async function loadExtensions(
         loadErrorListeners.add(callback)
         stops.add(() => loadErrorListeners.delete(callback))
       },
+      onBeforeLoad: (callback) => {
+        beforeLoad.add(callback)
+        stops.add(() => beforeLoad.delete(callback))
+      },
       react: (reactorName, tokens, handler, options) => {
         const reactor = log.reactor(`${name}/${reactorName}`, tokens, handler, options)
         facetHost.onOpen(reactor.start)
@@ -273,6 +287,32 @@ export async function loadExtensions(
     ].find((doc) => doc.definition.kind === kind)
   const openers = new Set<() => Promise<void>>()
   const loadErrorListeners = new Set<(name: string, error: string) => void>()
+  const beforeLoad = new Set<() => Promise<void>>()
+  /** Wait for the `onBeforeLoad` callbacks; the message of the first that failed. */
+  async function prepared() {
+    let failed: string | undefined
+    for (const callback of beforeLoad)
+      try {
+        await callback()
+      } catch (error) {
+        failed ??= error instanceof Error ? error.message : String(error)
+      }
+    return failed
+  }
+  let unprepared: string | undefined
+  /** `prepared` for a reload or a web build: it goes on either way, and each failure is said once, not on every save. */
+  async function preparedToLoad() {
+    const failed = await prepared()
+    if (failed && failed !== unprepared) notice(`Loading as it is: ${failed}`)
+    unprepared = failed
+    // Vite's resolver remembers where each package resolved to. pnpm installs a changed (patched) package into a new
+    // folder and moves the link, so a facet reloaded after an install kept importing the old folder: "useUrl is not a
+    // function" in 19 of 56 patch landings on a scratch host (#545608). Telling the resolver that node_modules
+    // changed makes it look again; that costs a few stats per reload.
+    const modules = join(host.ultimateRoot, 'node_modules')
+    for (const environment of Object.values(vite.environments))
+      await environment.pluginContainer.watchChange(modules, { event: 'create' })
+  }
   const releasers = new Set<() => Promise<void>>()
   let open = false
   const cleanups = new Set<() => Promise<void>>()
@@ -356,6 +396,7 @@ export async function loadExtensions(
     },
     onClose: (cleanup) => cleanups.add(cleanup),
     onLoadError: (callback) => loadErrorListeners.add(callback),
+    onBeforeLoad: (callback) => beforeLoad.add(callback),
     ultimateRoot: host.ultimateRoot,
     projectRoot: host.projectRoot,
     userHome: host.userHome,
@@ -368,7 +409,7 @@ export async function loadExtensions(
       host.scanSubmissions(query, limit, cursor, caller),
     models: () => host.models(),
     skills: (cwd) => host.skills(cwd),
-    restart: (approved) => host.restart(approved),
+    restart: async (approved) => (await prepared()) ?? host.restart(approved),
     get chapter() {
       return host.chapter
     },
@@ -395,6 +436,7 @@ export async function loadExtensions(
           enabled: records.get(entry.name)?.path === entry.path && records.get(entry.name)!.enabled,
           layer: available.settings.layers.get(entry.name) ?? 'folder',
           actions: [],
+          events: [],
           facets: {
             server: entry.files.includes('server.ts'),
             web: entry.files.includes('web.tsx'),
@@ -412,20 +454,11 @@ export async function loadExtensions(
       await extensionHost.reloadExtensions()
     },
     reloadExtensions: async () => {
-      const work = chain.then(() => reloadSettings())
+      const work = chain.then(preparedToLoad).then(() => reloadSettings())
       // The caller gets the failure; the chain recovers so later reloads still run.
       chain = work.catch(() => changed())
       await work
-      for (const id of [
-        '\0virtual:ultimate/web-facets',
-        join(host.ultimateRoot, 'web/src/index.css'),
-      ]) {
-        const module = vite.moduleGraph.getModuleById(id)
-        if (module) {
-          vite.moduleGraph.invalidateModule(module)
-          await vite.reloadModule(module)
-        }
-      }
+      await rebuildWeb()
     },
     doc: findDoc,
     metadata: Metadata,
@@ -441,10 +474,13 @@ export async function loadExtensions(
   let chain = Promise.resolve()
   /** Runs `work` after earlier reloads; a failure becomes a notice and still publishes what is loaded. */
   function enqueue(work: () => Promise<void>) {
-    chain = chain.then(work).catch((error: unknown) => {
-      notice(`Extension reload failed: ${String(error)}`)
-      return changed()
-    })
+    chain = chain
+      .then(preparedToLoad)
+      .then(work)
+      .catch((error: unknown) => {
+        notice(`Extension reload failed: ${String(error)}`)
+        return changed()
+      })
   }
   /** Drops `name`'s server facet: its host, tools, documents and actions. */
   async function unload(name: string) {
@@ -532,6 +568,7 @@ export async function loadExtensions(
         ...(core ? { core } : {}),
         layer,
         actions: Object.keys(actions.get(name) ?? {}),
+        events: (await contractOutline({ name, path, enabled })).events,
         readme,
         facets: { server: files.includes('server.ts'), web: files.includes('web.tsx') },
         ...(previous?.server ? { server: previous.server } : {}),
@@ -688,6 +725,7 @@ export async function loadExtensions(
     }
     const directory = directories.find((root) => file.startsWith(root + '/'))
     if (!directory && !/\.[cm]?[jt]s$/.test(file)) return
+    if (directory && inExtensionTests(file.slice(directory.length + 1))) return
     if (graphLost) {
       graphLost = false
       enqueue(() => reload())
@@ -726,6 +764,7 @@ export async function loadExtensions(
   const onStructure = (file: string) => {
     const directory = directories.find((root) => file.startsWith(root + '/'))
     if (!directory) return onChange(file)
+    if (inExtensionTests(file.slice(directory.length + 1))) return
     if (graphLost) {
       graphLost = false
       enqueue(() => reload())
@@ -776,6 +815,8 @@ export async function loadExtensions(
     doc: findDoc,
     catalogue: () => apis.catalogue(),
     trace: trace.reader,
+    prepared,
+    preparedToLoad,
     /** The harness is open: run the `onOpen` callbacks. */
     async opened() {
       trace.open()
