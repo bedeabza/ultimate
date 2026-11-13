@@ -1619,26 +1619,25 @@ export default function lineageExtension(host: ExtensionHost) {
         name: 'remember',
         deferred: true,
         description: `Change a root's project memory in one atomic batch. Limits, checked before anything is written: ${MEMORY_RULES}. One op over a limit refuses the whole batch, so count a line's characters before you send it and keep detail in the body. Ops are {op:'add', slug, kind: 'decision'|'fact'|'lesson', line, body, source?}, {op:'update', slug, kind?, line?, body?, source?} and {op:'delete', slug}; source is \`#<conversation>/<entry>\`. \`root\` defaults to your tree's root, or outside a tree to the project's only root.`,
+        // The length and slug limits are checked by applyMemoryOps, not the schema: pi-ai's schema error echoes
+        // every argument back, a whole 2,000-character body per refusal (ctp #211582); ours names the op, field
+        // and how far over it is.
         parameters: obj({
           root: opt(int({ minimum: 1 })),
           ops: arr(
             obj({
               op: strEnum(['add', 'update', 'delete']),
               slug: str({
-                pattern: MEMORY_SLUG.source,
-                maxLength: 48,
-                description: 'kebab-case, at most 48 characters',
+                description: `kebab-case, matching ${MEMORY_SLUG.source} (at most 48 characters)`,
               }),
               kind: opt(strEnum(['decision', 'fact', 'lesson'])),
               line: opt(
                 str({
-                  maxLength: LINE_CHARS,
                   description: `The index line: one line, at most ${LINE_CHARS} characters`,
                 }),
               ),
               body: opt(
                 str({
-                  maxLength: BODY_CHARS,
                   description: `The full memory, at most ${BODY_CHARS} characters; split longer text across memories`,
                 }),
               ),

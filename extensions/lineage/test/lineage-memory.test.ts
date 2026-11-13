@@ -164,11 +164,14 @@ it.concurrent('applies memory ops atomically and holds the cap', async () => {
     [[add('fine'), { op: 'update', slug: 'missing', line: 'x' }], 'no memory missing'],
     [[add('fine'), { op: 'delete', slug: 'missing' }], 'no memory missing'],
     [[add('fine'), add('Bad_Slug')], 'slug must match'],
-    [[add('fine'), add('long', 'x'.repeat(121))], 'line is 121 characters; it must be at most 120'],
+    [
+      [add('fine'), add('long', 'x'.repeat(121))],
+      'line is 121 characters, 1 over the limit of 120',
+    ],
     [[add('fine'), { ...add('multi'), line: 'one\ntwo' }], 'one non-empty line'],
     [
       [add('fine'), { ...add('big'), body: 'x'.repeat(2001) }],
-      'body is 2001 characters; it must be at most 2000',
+      'body is 2001 characters, 1 over the limit of 2000',
     ],
     [[add('fine'), { ...add('odd'), kind: 'opinion' }], 'kind must be'],
   ] as const)
@@ -369,6 +372,14 @@ it.concurrent('reads memories with memory; only @ultimate writes them with remem
       ultimate,
     ),
   ).rejects.toThrow('no memory gone')
+  // An op over the limits named each failure and echoed the whole 2,000-character body back (ctp #211582).
+  const long = { ...add('long'), line: 'l'.repeat(130), body: 'b'.repeat(2050) }
+  const refused = run(server, 'remember', { ops: [add('ok'), long, add('Bad_Slug')] }, ultimate)
+  await expect(refused).rejects.toThrow(
+    'Op 2 ("long"): line is 130 characters, 10 over the limit of 120; body is 2050 characters, 50 over the limit of 2000.',
+  )
+  await expect(refused).rejects.toThrow('Op 3 ("Bad_Slug"): slug must match')
+  await expect(refused).rejects.not.toThrow('bbbbbbbbbb')
   expect(Object.keys(await memories(server)).toSorted()).toEqual(['lint', 'pnpm'])
   expect(await run(server, 'memory', {}, id)).toMatch(
     /^#1's memory \(2\):\nlint \[fact\] — About lint \(updated \d{4}-\d\d-\d\d\)\npnpm \[fact\]/,

@@ -206,6 +206,39 @@ it('signs in through OAuth, caches the tools and bridges them behind codemode wi
   expect(text(called)).toContain('again')
 })
 
+it('returns only the named tool schema for tools {server, tool}', async () => {
+  // A 47-tool server returned all of its schemas (about 54,000 characters) to look up one tool.
+  const fixture = await install('http://127.0.0.1:1/mcp')
+  const schemaOf = (name: string) => ({ type: 'object', properties: { [`${name}_arg`]: {} } })
+  await mkdir(join(fixture.userHome, '.ultimate/mcp/tools'), { recursive: true })
+  await writeFile(
+    join(fixture.userHome, '.ultimate/mcp/tools/fake.json'),
+    JSON.stringify({
+      refreshedAt: new Date().toISOString(),
+      tools: ['send', 'search'].map((name) => ({
+        name,
+        description: `${name} mail\nmore`,
+        inputSchema: schemaOf(name),
+      })),
+    }),
+  )
+  const tools = (await fixture.install()).tools as ToolRegistration[]
+  const dispatcher = tools.find((tool) => tool.name === 'mcp')!
+  const run = (args: object) => dispatcher.execute(args, {} as never, {} as never)
+
+  const one = text(await run({ action: 'tools', server: 'fake', tool: 'search' }))
+  expect(one).toContain('search_arg')
+  expect(one).not.toContain('send')
+
+  const unknown = await run({ action: 'tools', server: 'fake', tool: 'nope' })
+  expect(unknown.isError).toBe(true)
+  expect(text(unknown)).toContain('no tool "nope" on fake; its tools: send, search')
+
+  const all = text(await run({ action: 'tools', server: 'fake' }))
+  expect(all.indexOf('- search: search mail\n')).toBeLessThan(all.indexOf('send_arg'))
+  expect(all).toContain('search_arg')
+})
+
 it('saves images and resource links into the save directory and returns only their paths', async () => {
   // A mail attachment came back as a resource link plus the full image, both into the context.
   const server = await fakeServer()

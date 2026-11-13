@@ -84,8 +84,23 @@ function parseOp(value: unknown, index: number): MemoryOp {
   const { op, slug, kind, line, body, source } = value as Record<string, unknown>
   if (op !== 'add' && op !== 'update' && op !== 'delete')
     return fail('op must be add, update or delete')
-  if (typeof slug !== 'string' || !MEMORY_SLUG.test(slug))
-    return fail(`slug must match ${MEMORY_SLUG.source}, got ${JSON.stringify(slug)}`)
+  if (typeof slug !== 'string') return fail('slug must be a string')
+  // Every limit an op breaks, in one message: the field, its length and how far over, never the text itself.
+  const over = (field: string, text: string, max: number) =>
+    text.length > max
+      ? `${field} is ${text.length} characters, ${text.length - max} over the limit of ${max}`
+      : undefined
+  const limits = [
+    MEMORY_SLUG.test(slug)
+      ? undefined
+      : `slug must match ${MEMORY_SLUG.source} (${slug.length} characters)`,
+    typeof line === 'string' ? over('line', line.trim(), LINE_CHARS) : undefined,
+    typeof body === 'string' ? over('body', body.trim(), BODY_CHARS) : undefined,
+  ].filter(Boolean)
+  if (limits.length)
+    throw new Error(
+      `Op ${index + 1} (${JSON.stringify(slug.slice(0, 60))}): ${limits.join('; ')}. Shorten the line and move detail into the body; split a long body across memories.`,
+    )
   if (op === 'delete') return { op, slug }
   const fields: { kind?: MemoryItem['kind']; line?: string; body?: string; source?: string } = {}
   if (kind !== undefined) {
@@ -96,18 +111,10 @@ function parseOp(value: unknown, index: number): MemoryOp {
   if (line !== undefined) {
     if (typeof line !== 'string' || !line.trim() || /\n/.test(line.trim()))
       return fail('line must be one non-empty line')
-    if (line.trim().length > LINE_CHARS)
-      return fail(
-        `line is ${line.trim().length} characters; it must be at most ${LINE_CHARS}: shorten it and move detail into the body`,
-      )
     fields.line = line.trim()
   }
   if (body !== undefined) {
     if (typeof body !== 'string' || !body.trim()) return fail('body must be non-empty text')
-    if (body.trim().length > BODY_CHARS)
-      return fail(
-        `body is ${body.trim().length} characters; it must be at most ${BODY_CHARS}: shorten it or split it across memories`,
-      )
     fields.body = body.trim()
   }
   if (source !== undefined) {
@@ -173,7 +180,17 @@ export async function applyMemoryOps(
   if (!(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots.includes(root))
     throw new Error(`#${root} is not a listed root`)
   if (!Array.isArray(ops)) throw new Error('ops must be a list')
-  const parsed = ops.map(parseOp)
+  // Every failing op is reported at once, so one retry can fix them all.
+  const errors: string[] = []
+  const parsed = ops.flatMap((value, index) => {
+    try {
+      return [parseOp(value, index)]
+    } catch (error) {
+      errors.push((error as Error).message)
+      return []
+    }
+  })
+  if (errors.length) throw new Error(errors.join('\n'))
   const doc = await tx.doc(Memory, root as ConversationId)
   const next = new Map(Object.entries(doc.memories))
   const done: Record<MemoryOp['op'], string[]> = { add: [], update: [], delete: [] }
